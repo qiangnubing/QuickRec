@@ -11,7 +11,7 @@ import time
 import tkinter as tk
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 from .audio import (
     AudioDevice,
@@ -32,12 +32,14 @@ from .config import (
     parse_video_bitrate_mbps,
 )
 from .countdown import CountdownOverlay
+from .directory_picker import ask_directory
 from .media import FFmpegError, find_ffmpeg
 from .paths import (
     OutputDirectoryError,
     build_output_path,
     default_videos_dir,
     ensure_output_dir,
+    fallback_output_dir,
     format_bytes,
     open_folder,
 )
@@ -93,7 +95,11 @@ class RecorderApp:
         self.root = root
         self._settings_store = SettingsStore()
         settings = self._settings_store.load()
-        initial_directory = settings.output_dir or str(default_videos_dir())
+        initial_directory, initial_notice, notice_color = self._resolve_initial_directory(
+            settings
+        )
+        self._initial_notice = initial_notice
+        self._initial_notice_color = notice_color
 
         self._state = _IDLE
         self._selector: RegionSelector | None = None
@@ -147,8 +153,41 @@ class RecorderApp:
             preferred_microphone_id=settings.microphone_device or None,
         )
         self._fit_and_center_window()
+        if self._initial_notice:
+            self._set_status(self._initial_notice, self._initial_notice_color)
         self.root.bind("<Unmap>", self._on_root_unmap, add="+")
         self._poll_job = self.root.after(100, self._poll_events)
+
+    @staticmethod
+    def _resolve_initial_directory(settings: AppSettings) -> tuple[str, str, str]:
+        """默认视频文件夹不可写时，自动切换到项目内可写目录。"""
+
+        default_directory = default_videos_dir()
+        saved = settings.output_dir.strip()
+        uses_default = not saved
+        if saved:
+            try:
+                uses_default = (
+                    str(Path(saved).resolve()).lower()
+                    == str(default_directory.resolve()).lower()
+                )
+            except OSError:
+                uses_default = False
+        if not uses_default:
+            return saved, "", _MUTED
+
+        try:
+            return str(ensure_output_dir(default_directory)), "", _MUTED
+        except OutputDirectoryError as exc:
+            try:
+                fallback = fallback_output_dir()
+            except OutputDirectoryError:
+                return str(default_directory), str(exc), _WARN
+            return (
+                str(fallback),
+                f"默认视频文件夹不可写，已切换到：{fallback}",
+                _INFO,
+            )
 
     # ------------------------------------------------------------------
     # 窗口与主界面
@@ -796,15 +835,17 @@ class RecorderApp:
     def _browse_output(self) -> None:
         initial = Path(self.output_var.get()).expanduser()
         initial_dir = initial if initial.is_dir() else default_videos_dir()
-        selected = filedialog.askdirectory(
-            parent=self.root,
-            title="选择视频保存文件夹",
-            initialdir=str(initial_dir),
-            mustexist=False,
-        )
-        if selected:
-            self.output_var.set(str(Path(selected)))
-            self._set_status(f"保存位置已更新：{selected}", _INFO)
+        selected = ask_directory(self.root, initial_dir)
+        if selected is None:
+            return
+        try:
+            directory = ensure_output_dir(selected)
+        except OutputDirectoryError as exc:
+            self._set_status("所选文件夹不可写。", _WARN)
+            messagebox.showerror("文件夹不可写", str(exc), parent=self.root)
+            return
+        self.output_var.set(str(directory))
+        self._set_status(f"保存位置已更新：{directory}", _INFO)
 
     def _open_output_folder(self) -> None:
         try:

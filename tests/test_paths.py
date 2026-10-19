@@ -9,6 +9,7 @@ from short_video_capture.paths import (
     OutputDirectoryError,
     build_output_path,
     ensure_output_dir,
+    fallback_output_dir,
     format_bytes,
     normalize_output_dir,
 )
@@ -24,6 +25,10 @@ class OutputDirectoryTests(unittest.TestCase):
     def test_rejects_empty_path(self) -> None:
         with self.assertRaises(OutputDirectoryError):
             normalize_output_dir("   ")
+
+    def test_fallback_directory_is_writable(self) -> None:
+        directory = fallback_output_dir()
+        self.assertTrue(directory.is_dir())
 
 
 class OutputPathTests(unittest.TestCase):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import secrets
 import subprocess
 import tempfile
 from ctypes import wintypes
@@ -95,14 +96,84 @@ def ensure_output_dir(raw_path: str | os.PathLike[str]) -> Path:
     if not directory.is_dir():
         raise OutputDirectoryError(f"保存路径不是文件夹：{directory}")
 
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=directory, prefix=".write_test_", delete=True
-        ):
-            pass
-    except OSError as exc:
-        raise OutputDirectoryError(f"保存目录不可写：{directory}\n{exc}") from exc
+    _probe_writable(directory)
     return directory
+
+
+def _probe_writable(directory: Path) -> None:
+    """用一次快速的文件创建验证写权限。
+
+    Windows 的受限令牌可能让 ``os.access`` 返回错误结果；而
+    ``tempfile.NamedTemporaryFile`` 在只读/沙箱目录中可能长时间阻塞。
+    这里直接调用 CreateFileW，权限不足时会立即失败。
+    """
+
+    if os.name != "nt":
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, prefix=".write_test_", delete=True):
+                pass
+        except OSError as exc:
+            raise OutputDirectoryError(f"保存目录不可写：{directory}\n{exc}") from exc
+        return
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+
+    probe = directory / f".screen_recorder_write_{os.getpid()}_{secrets.token_hex(4)}"
+    handle = create_file(
+        str(probe),
+        0x40000000,  # GENERIC_WRITE
+        0,
+        None,
+        1,  # CREATE_NEW
+        0x100 | 0x04000000,  # TEMPORARY | DELETE_ON_CLOSE
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle in (None, invalid_handle):
+        error = ctypes.get_last_error()
+        detail = ctypes.FormatError(error) if error else "权限不足"
+        raise OutputDirectoryError(f"保存目录不可写：{directory}\n{detail}")
+    close_handle(handle)
+    try:
+        probe.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def fallback_output_dir() -> Path:
+    """当默认视频文件夹不可写时，返回一个可用的项目内输出目录。"""
+
+    candidates = [
+        Path(__file__).resolve().parents[2] / "output",
+        Path.cwd() / "output",
+        Path(tempfile.gettempdir()) / "屏幕录制",
+    ]
+    seen: set[str] = set()
+    errors: list[str] = []
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            return ensure_output_dir(candidate)
+        except OutputDirectoryError as exc:
+            errors.append(str(exc))
+    detail = "\n".join(errors)
+    raise OutputDirectoryError(f"找不到可写的保存目录。\n{detail}")
 
 
 def build_output_path(directory: Path, when: datetime | None = None) -> Path:
