@@ -220,8 +220,8 @@ class RecorderApp:
             pass
         style.configure(
             "Recorder.TCombobox",
-            fieldbackground=_CARD_BG,
-            background=_CARD_BG,
+            fieldbackground=_FIELD_BG,
+            background=_FIELD_BG,
             foreground=_TEXT,
             arrowcolor="#475569",
             padding=4,
@@ -230,18 +230,18 @@ class RecorderApp:
         style.map(
             "Recorder.TCombobox",
             fieldbackground=[
-                ("readonly", _CARD_BG),
+                ("readonly", _FIELD_BG),
                 ("disabled", "#F1F5F9"),
             ],
             foreground=[("readonly", _TEXT), ("disabled", _MUTED)],
-            selectbackground=[("readonly", _CARD_BG)],
+            selectbackground=[("readonly", _FIELD_BG)],
             selectforeground=[("readonly", _TEXT)],
-            background=[("readonly", _CARD_BG), ("disabled", "#F1F5F9")],
+            background=[("readonly", _FIELD_BG), ("disabled", "#F1F5F9")],
         )
 
         # Tk 的 Combobox 下拉列表是独立的 Listbox，需要单独设置选项数据库。
         dropdown_options = {
-            "background": _CARD_BG,
+            "background": _FIELD_BG,
             "foreground": _TEXT,
             "selectBackground": "#DBEAFE",
             "selectForeground": _TEXT,
