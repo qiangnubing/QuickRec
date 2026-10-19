@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Logs and runtime output
+*.log
+logs/
+output/
+captures/
+tmp/
+temp/
+
+# Node.js（如后续引入前端工具链）
+node_modules/
+.pnpm-store/
+dist-electron/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+secrets/
