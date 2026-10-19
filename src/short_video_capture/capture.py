@@ -14,6 +14,7 @@ from typing import Protocol
 import mss
 import numpy as np
 
+from .cursor import CursorRenderer
 from .media import FFmpegVideoSink
 
 LOGGER = logging.getLogger(__name__)
@@ -149,6 +150,7 @@ def record_video(
     source_factory: SourceFactory | None = None,
     sink_factory: SinkFactory | None = None,
     on_start: Callable[[], None] | None = None,
+    include_cursor: bool = True,
 ) -> VideoCaptureResult:
     """录制指定区域，阻塞直到录制完成或 ``stop_event`` 被设置。"""
 
@@ -170,8 +172,9 @@ def record_video(
 
     source: ScreenSource | None = None
     sink: VideoSink | None = None
+    cursor_renderer: CursorRenderer | None = None
     frame_count = 0
-    last_frame: np.ndarray | None = None
+    background: np.ndarray | None = None
     stopped_early = False
     capture_error: BaseException | None = None
     close_error: BaseException | None = None
@@ -185,6 +188,27 @@ def record_video(
             settings.fps,
             settings.bitrate_kbps,
         )
+        if include_cursor:
+            try:
+                cursor_renderer = CursorRenderer()
+            except Exception as exc:
+                raise RecordingError(f"无法初始化鼠标指针绘制：{exc}") from exc
+
+        def emit(frame: np.ndarray) -> None:
+            nonlocal cursor_renderer
+            if cursor_renderer is None:
+                sink.write(frame)
+                return
+            output = frame.copy()
+            try:
+                cursor_renderer.draw(output, region)
+            except Exception:
+                LOGGER.exception("绘制鼠标指针失败，本次录制将不再绘制鼠标")
+                cursor_renderer.close()
+                cursor_renderer = None
+                output = frame
+            sink.write(output)
+
         if on_start is not None:
             on_start()
         started_at = time.perf_counter()
@@ -212,7 +236,7 @@ def record_video(
             # 编码输出仍按时隙逐帧推进，高帧率下用上一帧补齐。
             too_late = now - target > frame_period * 0.5
             grab_due = (
-                last_frame is None
+                background is None
                 or (now - last_grab_at >= frame_period * 0.85 and not too_late)
             )
             if grab_due:
@@ -220,18 +244,23 @@ def record_video(
                 grabbed = source.grab()
                 if grabbed is None or grabbed.ndim != 3 or grabbed.shape[2] != 4:
                     raise RecordingError("采集到的画面格式异常（需要 BGRA）。")
-                last_frame = np.ascontiguousarray(grabbed)
+                background = np.ascontiguousarray(grabbed)
 
-            sink.write(last_frame)
+            emit(background)
             frame_count += 1
 
-        if not stopped_early and last_frame is not None and frame_count < total_frames:
+        if not stopped_early and background is not None and frame_count < total_frames:
             for _ in range(total_frames - frame_count):
-                sink.write(last_frame)
+                emit(background)
                 frame_count += 1
     except BaseException as exc:
         capture_error = exc
     finally:
+        if cursor_renderer is not None:
+            try:
+                cursor_renderer.close()
+            except Exception:
+                LOGGER.exception("关闭鼠标指针绘制器失败")
         if sink is not None:
             try:
                 if capture_error is not None and hasattr(sink, "abort"):
@@ -258,7 +287,7 @@ def record_video(
         _remove_partial_file(output_path)
         raise RecordingError(f"保存视频失败：{close_error}") from close_error
 
-    if frame_count == 0 or last_frame is None:
+    if frame_count == 0 or background is None:
         _remove_partial_file(output_path)
         raise RecordingError("没有采集到任何画面，请重新选择录制区域。")
 

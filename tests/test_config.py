@@ -76,10 +76,12 @@ class SettingsStoreTests(unittest.TestCase):
             microphone_enabled=True,
             system_audio_device="speaker-id",
             microphone_device="mic-id",
+            record_cursor=False,
         )
         self.store.save(settings)
         loaded = self.store.load()
         self.assertEqual(loaded, settings)
+        self.assertFalse(loaded.record_cursor)
 
     def test_invalid_duration_falls_back(self) -> None:
         self.path.parent.mkdir(parents=True)

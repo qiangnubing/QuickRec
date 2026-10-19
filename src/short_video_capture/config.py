@@ -98,6 +98,7 @@ class AppSettings:
     microphone_enabled: bool = False
     system_audio_device: str = ""
     microphone_device: str = ""
+    record_cursor: bool = True
 
     def normalized(self) -> "AppSettings":
         duration = _int_in_range(
@@ -128,6 +129,7 @@ class AppSettings:
             microphone_enabled=bool(self.microphone_enabled),
             system_audio_device=system_audio_device,
             microphone_device=microphone_device,
+            record_cursor=bool(self.record_cursor),
         )
 
 
@@ -187,6 +189,7 @@ class SettingsStore:
             microphone_enabled=_as_bool(data.get("microphone_enabled"), False),
             system_audio_device=_as_str(data.get("system_audio_device")),
             microphone_device=_as_str(data.get("microphone_device")),
+            record_cursor=_as_bool(data.get("record_cursor"), True),
         ).normalized()
         schema_version = _as_int(data.get("schema_version"), 1)
         if (

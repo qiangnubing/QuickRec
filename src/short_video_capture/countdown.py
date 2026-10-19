@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import font as tkfont
 
 from .win32 import (
     exclude_from_capture,
-    make_click_through,
+    make_overlay_window,
     primary_work_area,
 )
 
@@ -21,11 +22,18 @@ _ACCENT = "#F43F5E"
 class CountdownOverlay:
     """置顶、无边框、点击穿透的倒计时，录制时显示屏幕右下角。"""
 
-    def __init__(self, root: tk.Misc, total_seconds: int) -> None:
+    def __init__(
+        self,
+        root: tk.Misc,
+        total_seconds: int,
+        on_stop: Callable[[], None] | None = None,
+    ) -> None:
         self._root = root
         self._total_seconds = total_seconds
+        self._on_stop = on_stop
         self._blink_job: str | None = None
         self._dot_visible = True
+        self._stopping = False
         self._closed = False
 
         self.window = tk.Toplevel(root)
@@ -75,6 +83,25 @@ class CountdownOverlay:
         )
         self._timer.pack(side="left")
 
+        self._stop_button = tk.Button(
+            content,
+            text="停止",
+            command=self._request_stop,
+            bg="#DC2626",
+            fg="#FFFFFF",
+            activebackground="#B91C1C",
+            activeforeground="#FFFFFF",
+            disabledforeground="#FEE2E2",
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=10,
+            pady=2,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self._stop_button.pack(side="left", padx=(14, 0))
+
     def show(self) -> None:
         self.window.deiconify()
         self.window.update_idletasks()
@@ -82,7 +109,7 @@ class CountdownOverlay:
         self.window.lift()
         self.window.update_idletasks()
         exclude_from_capture(self.window)
-        make_click_through(self.window)
+        make_overlay_window(self.window, click_through=False)
         self._schedule_blink()
 
     def _place_bottom_right(self) -> None:
@@ -128,6 +155,27 @@ class CountdownOverlay:
             self._closed = True
             return
         self._schedule_blink()
+
+    def _request_stop(self) -> None:
+        if self._stopping:
+            return
+        self.mark_stopping()
+        if self._on_stop is not None:
+            self._on_stop()
+
+    def mark_stopping(self) -> None:
+        if self._stopping or self._closed:
+            return
+        self._stopping = True
+        try:
+            self._stop_button.configure(
+                text="保存中…",
+                state="disabled",
+                bg="#7F1D1D",
+                cursor="arrow",
+            )
+        except tk.TclError:
+            self._closed = True
 
     def close(self) -> None:
         if self._closed:

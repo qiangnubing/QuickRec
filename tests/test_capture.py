@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -128,6 +129,7 @@ class RecordVideoTests(unittest.TestCase):
             settings=VideoSettings(20, 4_000),
             source_factory=source_factory,
             sink_factory=FakeSink,
+            include_cursor=False,
         )
 
         self.assertTrue(output.is_file())
@@ -142,6 +144,41 @@ class RecordVideoTests(unittest.TestCase):
         self.assertEqual(sink.frames[0].shape, (50, 100, 4))
         self.assertTrue(source_holder[0].closed)
 
+    def test_cursor_renderer_draws_on_each_output_frame(self) -> None:
+        class FakeCursorRenderer:
+            instance = None
+
+            def __init__(self) -> None:
+                self.draw_calls = 0
+                self.closed = False
+                FakeCursorRenderer.instance = self
+
+            def draw(self, frame: np.ndarray, region: CaptureRegion) -> np.ndarray:
+                self.draw_calls += 1
+                frame[:, :, 0] = 17
+                return frame
+
+            def close(self) -> None:
+                self.closed = True
+
+        output = self.directory / "cursor.mp4"
+        with patch(
+            "short_video_capture.capture.CursorRenderer", FakeCursorRenderer
+        ):
+            result = record_video(
+                CaptureRegion(0, 0, 64, 64),
+                output,
+                duration_seconds=0.1,
+                settings=VideoSettings(10, 2_000),
+                source_factory=FakeSource,
+                sink_factory=FakeSink,
+                include_cursor=True,
+            )
+        renderer = FakeCursorRenderer.instance
+        self.assertIsNotNone(renderer)
+        self.assertEqual(renderer.draw_calls, result.frame_count)
+        self.assertTrue(renderer.closed)
+
     def test_high_fps_does_not_freeze_at_end(self) -> None:
         def source_factory(region: CaptureRegion) -> FakeSource:
             return FakeSource(region, grab_delay=0.03)
@@ -155,6 +192,7 @@ class RecordVideoTests(unittest.TestCase):
             settings=VideoSettings(60, 8_000),
             source_factory=source_factory,
             sink_factory=FakeSink,
+            include_cursor=False,
         )
 
         self.assertEqual(result.frame_count, 12)
@@ -179,6 +217,7 @@ class RecordVideoTests(unittest.TestCase):
             stop_event=stop_event,
             source_factory=source_factory,
             sink_factory=FakeSink,
+            include_cursor=False,
         )
 
         self.assertLess(time.perf_counter() - started, 1.0)
@@ -198,6 +237,7 @@ class RecordVideoTests(unittest.TestCase):
                 settings=VideoSettings(20, 4_000),
                 stop_event=stop_event,
                 sink_factory=FakeSink,
+            include_cursor=False,
             )
         self.assertFalse(output.exists())
 
@@ -209,6 +249,7 @@ class RecordVideoTests(unittest.TestCase):
                 duration_seconds=0,
                 settings=VideoSettings(),
                 sink_factory=FakeSink,
+            include_cursor=False,
             )
 
     def test_refuses_to_overwrite_existing_file(self) -> None:
@@ -221,6 +262,7 @@ class RecordVideoTests(unittest.TestCase):
                 duration_seconds=1,
                 settings=VideoSettings(),
                 sink_factory=FakeSink,
+            include_cursor=False,
             )
         self.assertEqual(output.read_bytes(), b"keep-me")
 

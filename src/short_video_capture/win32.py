@@ -126,8 +126,8 @@ def exclude_from_capture(window: object) -> bool:
         return False
 
 
-def make_click_through(window: object) -> None:
-    """让倒计时浮层不抢焦点、不拦截鼠标，也不出现在 Alt+Tab 中。"""
+def make_overlay_window(window: object, *, click_through: bool = False) -> None:
+    """让浮层不抢焦点、不进入 Alt+Tab；可选择是否完全穿透鼠标。"""
 
     hwnd = _toplevel_hwnd(window)
     user32 = ctypes.windll.user32
@@ -149,7 +149,11 @@ def make_click_through(window: object) -> None:
     user32.SetWindowPos.restype = wintypes.BOOL
 
     style = int(get_style(hwnd, GWL_EXSTYLE))
-    style |= WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+    style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+    if click_through:
+        style |= WS_EX_TRANSPARENT
+    else:
+        style &= ~WS_EX_TRANSPARENT
     set_style(hwnd, GWL_EXSTYLE, style)
     user32.SetWindowPos(
         hwnd,
@@ -160,3 +164,7 @@ def make_click_through(window: object) -> None:
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
     )
+
+
+def make_click_through(window: object) -> None:
+    make_overlay_window(window, click_through=True)

@@ -122,6 +122,7 @@ class RecorderApp:
         self._audio_selection = AudioSelection()
         self._recording_started_at = 0.0
         self._cancel_requested = False
+        self._stop_requested = False
         self._exit_when_done = False
         self._tray_hide_failed = False
         self._audio_devices = AudioDevices((), (), None, None)
@@ -138,8 +139,10 @@ class RecorderApp:
         self.audio_bitrate_var = tk.StringVar(value=str(settings.audio_bitrate_kbps))
         self.system_audio_var = tk.BooleanVar(value=settings.system_audio_enabled)
         self.microphone_var = tk.BooleanVar(value=settings.microphone_enabled)
+        self.record_cursor_var = tk.BooleanVar(value=settings.record_cursor)
         self.system_device_var = tk.StringVar()
         self.microphone_device_var = tk.StringVar()
+        self._include_cursor = settings.record_cursor
 
         self._configure_window()
         self._build_ui()
@@ -451,6 +454,21 @@ class RecorderApp:
             fg=_MUTED,
             font=("Microsoft YaHei UI", 8),
         ).pack(side="left", padx=(4, 0))
+        self._cursor_check = tk.Checkbutton(
+            quality,
+            text="录制鼠标指针",
+            variable=self.record_cursor_var,
+            bg=_CARD_BG,
+            activebackground=_CARD_BG,
+            selectcolor=_CARD_BG,
+            fg=_TEXT,
+            activeforeground=_TEXT,
+            anchor="w",
+            highlightthickness=0,
+            bd=0,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self._cursor_check.pack(side="left", padx=(22, 0), pady=(17, 0))
 
         tk.Frame(card, bg=_BORDER, height=1).pack(fill="x", pady=(4, 7))
 
@@ -945,12 +963,18 @@ class RecorderApp:
     # ------------------------------------------------------------------
     def _begin_recording(self, region: CaptureRegion, output_path: Path) -> None:
         self._cancel_requested = False
+        self._stop_requested = False
         self._exit_when_done = False
+        self._include_cursor = bool(self.record_cursor_var.get())
         self._stop_event = threading.Event()
 
         countdown: CountdownOverlay | None = None
         try:
-            countdown = CountdownOverlay(self.root, self._duration_seconds)
+            countdown = CountdownOverlay(
+                self.root,
+                self._duration_seconds,
+                on_stop=self._stop_recording_from_overlay,
+            )
             countdown.show()
             self._countdown = countdown
         except Exception:
@@ -997,6 +1021,7 @@ class RecorderApp:
                 on_started=lambda: self._events.put(
                     ("started", time.perf_counter())
                 ),
+                include_cursor=self._include_cursor,
             )
         except Exception as exc:
             LOGGER.exception("录制失败")
@@ -1088,6 +1113,8 @@ class RecorderApp:
                 LOGGER.info("用户从托盘退出程序")
                 self._cancel_requested = True
                 self._exit_when_done = True
+                if self._countdown is not None:
+                    self._countdown.mark_stopping()
                 if self._stop_event is not None:
                     self._stop_event.set()
             else:
@@ -1097,10 +1124,15 @@ class RecorderApp:
             return
         if payload == "stop":
             LOGGER.info("用户从托盘请求提前停止录制")
+            self._stop_requested = True
+            if self._countdown is not None:
+                self._countdown.mark_stopping()
             self._stop_event.set()
         elif payload == "cancel":
             LOGGER.info("用户从托盘取消录制")
             self._cancel_requested = True
+            if self._countdown is not None:
+                self._countdown.mark_stopping()
             self._stop_event.set()
 
     def _show_from_tray(self) -> None:
@@ -1109,6 +1141,15 @@ class RecorderApp:
         self._stop_tray()
         self._restore_main()
         self._set_status("已从系统托盘恢复。", _MUTED)
+
+    def _stop_recording_from_overlay(self) -> None:
+        if self._state != _RECORDING or self._stop_event is None:
+            return
+        LOGGER.info("用户点击倒计时中的停止按钮")
+        self._stop_requested = True
+        self._stop_event.set()
+        if self._countdown is not None:
+            self._countdown.mark_stopping()
 
     def _on_root_unmap(self, event: tk.Event) -> None:
         if self._destroyed or event.widget is not self.root:
@@ -1171,6 +1212,7 @@ class RecorderApp:
     def _handle_recording_error(self, payload: object) -> None:
         error = payload if isinstance(payload, BaseException) else RuntimeError(str(payload))
         cancelled = self._cancel_requested
+        stop_requested = self._stop_requested
         exit_after = self._exit_when_done
         self._finish_recording_ui()
         if exit_after:
@@ -1180,6 +1222,9 @@ class RecorderApp:
         self._state = _IDLE
         if cancelled:
             self._set_status("已取消录制，视频未保存。", _MUTED)
+            return
+        if stop_requested and "没有采集到任何画面" in str(error):
+            self._set_status("录制时间太短，未生成视频。", _MUTED)
             return
         LOGGER.error("录制失败：%s", error)
         self._set_status("录制失败，请检查设置后重试。", _WARN)
@@ -1299,6 +1344,7 @@ class RecorderApp:
                 microphone_enabled=bool(self.microphone_var.get()),
                 system_audio_device=system_id or "",
                 microphone_device=microphone_id or "",
+                record_cursor=bool(self.record_cursor_var.get()),
             )
         )
 

@@ -117,6 +117,7 @@ def record_session(
     *,
     stop_event=None,
     on_started: Callable[[], None] | None = None,
+    include_cursor: bool = True,
 ) -> RecordingResult:
     """执行完整录制，返回最终文件信息。"""
 
@@ -153,6 +154,7 @@ def record_session(
                 video_settings,
                 stop_event=stop_event,
                 on_start=begin_recording,
+                include_cursor=include_cursor,
             )
             recorder.stop()
             audio_started = False
