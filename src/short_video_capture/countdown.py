@@ -105,7 +105,10 @@ class CountdownOverlay:
     @staticmethod
     def _format(remaining_seconds: float) -> str:
         whole = max(0, math.ceil(remaining_seconds))
-        minutes, seconds = divmod(whole, 60)
+        hours, remainder = divmod(whole, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
     def _schedule_blink(self) -> None:

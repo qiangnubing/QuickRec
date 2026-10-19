@@ -7,14 +7,15 @@ import itertools
 import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from ctypes import wintypes
 from pathlib import Path
 from typing import Literal
 
 LOGGER = logging.getLogger(__name__)
 
-TrayCommand = Literal["stop", "cancel", "exit"]
+TrayCommand = Literal["stop", "cancel", "exit", "show"]
+TrayMenuItem = tuple[str, TrayCommand]
 
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
@@ -44,11 +45,13 @@ TPM_RIGHTBUTTON = 0x0002
 TPM_RETURNCMD = 0x0100
 TPM_NONOTIFY = 0x0080
 
-CMD_STOP = 1001
-CMD_CANCEL = 1002
-CMD_EXIT = 1003
-
 _TRAY_WINDOW_SEQUENCE = itertools.count(1)
+_DEFAULT_MENU: tuple[TrayMenuItem | None, ...] = (
+    ("停止并保存", "stop"),
+    ("取消录制", "cancel"),
+    None,
+    ("退出程序（放弃录制）", "exit"),
+)
 
 WNDPROC = ctypes.WINFUNCTYPE(
     ctypes.c_ssize_t,
@@ -117,10 +120,13 @@ class TrayIcon:
         tooltip: str,
         icon_path: Path,
         on_command: Callable[[TrayCommand], None],
+        menu_items: Sequence[TrayMenuItem | None] | None = None,
     ) -> None:
         self._tooltip = tooltip
         self._icon_path = icon_path
         self._on_command = on_command
+        self._menu_items = tuple(menu_items) if menu_items is not None else _DEFAULT_MENU
+        self._menu_commands: dict[int, TrayCommand] = {}
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
@@ -391,10 +397,15 @@ class TrayIcon:
             menu = user32.CreatePopupMenu()
             if not menu:
                 return
-            user32.AppendMenuW(menu, MF_STRING, CMD_STOP, "停止并保存")
-            user32.AppendMenuW(menu, MF_STRING, CMD_CANCEL, "取消录制")
-            user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
-            user32.AppendMenuW(menu, MF_STRING, CMD_EXIT, "退出程序（放弃录制）")
+            self._menu_commands.clear()
+            for index, item in enumerate(self._menu_items):
+                if item is None:
+                    user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+                    continue
+                label, command = item
+                command_id = 2000 + index
+                self._menu_commands[command_id] = command
+                user32.AppendMenuW(menu, MF_STRING, command_id, label)
 
             point = wintypes.POINT()
             user32.GetCursorPos(ctypes.byref(point))
@@ -409,7 +420,7 @@ class TrayIcon:
                 wintypes.LPVOID,
             ]
             user32.TrackPopupMenu.restype = wintypes.UINT
-            command = user32.TrackPopupMenu(
+            command_id = user32.TrackPopupMenu(
                 menu,
                 TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
                 point.x,
@@ -419,12 +430,9 @@ class TrayIcon:
                 None,
             )
             user32.PostMessageW(self._hwnd, WM_NULL, 0, 0)
-            if command == CMD_STOP:
-                self._emit("stop")
-            elif command == CMD_CANCEL:
-                self._emit("cancel")
-            elif command == CMD_EXIT:
-                self._emit("exit")
+            command = self._menu_commands.get(int(command_id))
+            if command is not None:
+                self._emit(command)
         finally:
             if menu:
                 user32.DestroyMenu(menu)

@@ -1,4 +1,4 @@
-"""屏幕采集与视频编码核心逻辑，不依赖界面。"""
+"""屏幕采集与 H.264 视频编码核心逻辑，不依赖界面。"""
 
 from __future__ import annotations
 
@@ -11,17 +11,41 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import cv2
 import mss
 import numpy as np
 
+from .media import FFmpegVideoSink
+
 LOGGER = logging.getLogger(__name__)
-DEFAULT_FPS = 20
+DEFAULT_FPS = 30
+DEFAULT_BITRATE_KBPS = 8_000
 MIN_REGION_SIZE = 2
+MIN_FPS = 5
+MAX_FPS = 60
+MIN_BITRATE_KBPS = 500
+MAX_BITRATE_KBPS = 50_000
 
 
 class RecordingError(RuntimeError):
     """录制过程失败。"""
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSettings:
+    fps: int = DEFAULT_FPS
+    bitrate_kbps: int = DEFAULT_BITRATE_KBPS
+
+    def __post_init__(self) -> None:
+        if not MIN_FPS <= self.fps <= MAX_FPS:
+            raise ValueError(f"帧率必须在 {MIN_FPS} 到 {MAX_FPS} 之间。")
+        if not MIN_BITRATE_KBPS <= self.bitrate_kbps <= MAX_BITRATE_KBPS:
+            raise ValueError(
+                f"视频码率必须在 {MIN_BITRATE_KBPS} 到 {MAX_BITRATE_KBPS} kbps 之间。"
+            )
+
+    @property
+    def bitrate_mbps(self) -> float:
+        return self.bitrate_kbps / 1000.0
 
 
 class ScreenSource(Protocol):
@@ -31,11 +55,9 @@ class ScreenSource(Protocol):
 
 
 class VideoSink(Protocol):
-    def isOpened(self) -> bool: ...
-
     def write(self, frame: np.ndarray) -> None: ...
 
-    def release(self) -> None: ...
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +80,7 @@ class CaptureRegion:
         return self.top + self.height
 
     def even_sized(self) -> "CaptureRegion":
-        """H.264/MPEG-4 编码器通常只接受偶数宽高。"""
+        """编码器通常只接受偶数宽高。"""
 
         width = self.width - self.width % 2
         height = self.height - self.height % 2
@@ -77,11 +99,16 @@ class CaptureRegion:
 
 
 @dataclass(frozen=True, slots=True)
-class RecordingResult:
+class VideoCaptureResult:
     path: Path
     frame_count: int
-    duration_seconds: float
+    elapsed_seconds: float
     stopped_early: bool
+    fps: int
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.frame_count / self.fps
 
 
 class _MssSource:
@@ -96,38 +123,37 @@ class _MssSource:
         self._screen.close()
 
 
-def _open_writer(path: Path, fps: int, region: CaptureRegion) -> VideoSink:
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(
-        str(path), fourcc, float(fps), (region.width, region.height)
-    )
-    return writer
-
-
 SourceFactory = Callable[[CaptureRegion], ScreenSource]
-WriterFactory = Callable[[Path, int, CaptureRegion], VideoSink]
+SinkFactory = Callable[[Path, CaptureRegion, int, int], VideoSink]
 
 
-def record_screen(
+def _open_ffmpeg_sink(
+    path: Path, region: CaptureRegion, fps: int, bitrate_kbps: int
+) -> VideoSink:
+    return FFmpegVideoSink(
+        path,
+        width=region.width,
+        height=region.height,
+        fps=fps,
+        bitrate_kbps=bitrate_kbps,
+    )
+
+
+def record_video(
     region: CaptureRegion,
     output_path: Path,
     duration_seconds: float,
+    settings: VideoSettings,
     *,
-    fps: int = DEFAULT_FPS,
     stop_event: threading.Event | None = None,
     source_factory: SourceFactory | None = None,
-    writer_factory: WriterFactory | None = None,
-) -> RecordingResult:
-    """录制指定区域，阻塞直到录制完成或 ``stop_event`` 被设置。
+    sink_factory: SinkFactory | None = None,
+    on_start: Callable[[], None] | None = None,
+) -> VideoCaptureResult:
+    """录制指定区域，阻塞直到录制完成或 ``stop_event`` 被设置。"""
 
-    ``source_factory`` 和 ``writer_factory`` 仅用于测试注入；正常调用无需传入。
-    """
-
-    if not 0 < duration_seconds <= 3600:
-        raise ValueError("录制时长必须在 0 到 3600 秒之间。")
-    if not 1 <= fps <= 60:
-        raise ValueError("帧率必须在 1 到 60 之间。")
-
+    if not 0 < duration_seconds <= 86400:
+        raise ValueError("录制时长必须在 0 到 86400 秒之间。")
     output_path = Path(output_path)
     if output_path.exists():
         raise RecordingError(f"目标视频文件已存在：{output_path}")
@@ -138,36 +164,42 @@ def record_screen(
         raise RecordingError(f"无法创建视频保存目录：{output_path.parent}\n{exc}") from exc
 
     source_factory = source_factory or _MssSource
-    writer_factory = writer_factory or _open_writer
-    total_frames = max(1, math.ceil(duration_seconds * fps))
-    frame_period = 1.0 / fps
+    sink_factory = sink_factory or _open_ffmpeg_sink
+    total_frames = max(1, math.ceil(duration_seconds * settings.fps))
+    frame_period = 1.0 / settings.fps
 
     source: ScreenSource | None = None
-    writer: VideoSink | None = None
+    sink: VideoSink | None = None
     frame_count = 0
     last_frame: np.ndarray | None = None
     stopped_early = False
     capture_error: BaseException | None = None
-    release_error: BaseException | None = None
+    close_error: BaseException | None = None
     started_at = time.perf_counter()
 
     try:
         source = source_factory(region)
-        writer = writer_factory(output_path, fps, region)
-        if not writer.isOpened():
-            raise RecordingError("无法初始化视频编码器，请检查 OpenCV 是否安装完整。")
-
+        sink = sink_factory(
+            output_path,
+            region,
+            settings.fps,
+            settings.bitrate_kbps,
+        )
+        if on_start is not None:
+            on_start()
+        started_at = time.perf_counter()
         deadline = started_at + duration_seconds
-        next_frame_at = started_at
-        while True:
+        last_grab_at = started_at
+        while frame_count < total_frames:
+            target = started_at + frame_count * frame_period
+            if target >= deadline:
+                break
             now = time.perf_counter()
             if stop_event is not None and stop_event.is_set():
                 stopped_early = True
                 break
-            if now >= deadline:
-                break
-            if now < next_frame_at:
-                wait_seconds = min(next_frame_at - now, deadline - now)
+            if now < target:
+                wait_seconds = min(target - now, deadline - now)
                 if stop_event is not None:
                     if stop_event.wait(wait_seconds):
                         stopped_early = True
@@ -176,31 +208,38 @@ def record_screen(
                     time.sleep(wait_seconds)
                 continue
 
-            grabbed = source.grab()
-            if grabbed is None or grabbed.ndim != 3 or grabbed.shape[2] < 3:
-                raise RecordingError("采集到的画面格式异常。")
-            if grabbed.shape[2] == 4:
-                frame = cv2.cvtColor(grabbed, cv2.COLOR_BGRA2BGR)
-            else:
-                frame = grabbed[:, :, :3]
-            writer.write(frame)
-            last_frame = frame
-            frame_count += 1
-            next_frame_at += frame_period
+            # 只在距离上一帧足够久、且没有明显落后于时间轴时抓取新画面；
+            # 编码输出仍按时隙逐帧推进，高帧率下用上一帧补齐。
+            too_late = now - target > frame_period * 0.5
+            grab_due = (
+                last_frame is None
+                or (now - last_grab_at >= frame_period * 0.85 and not too_late)
+            )
+            if grab_due:
+                last_grab_at = time.perf_counter()
+                grabbed = source.grab()
+                if grabbed is None or grabbed.ndim != 3 or grabbed.shape[2] != 4:
+                    raise RecordingError("采集到的画面格式异常（需要 BGRA）。")
+                last_frame = np.ascontiguousarray(grabbed)
 
-        # 若编码偶发变慢，用最后一帧补齐固定时长，避免视频比所选时长短。
-        if not stopped_early and frame_count < total_frames and last_frame is not None:
+            sink.write(last_frame)
+            frame_count += 1
+
+        if not stopped_early and last_frame is not None and frame_count < total_frames:
             for _ in range(total_frames - frame_count):
-                writer.write(last_frame)
+                sink.write(last_frame)
                 frame_count += 1
     except BaseException as exc:
         capture_error = exc
     finally:
-        if writer is not None:
+        if sink is not None:
             try:
-                writer.release()
+                if capture_error is not None and hasattr(sink, "abort"):
+                    sink.abort()  # type: ignore[attr-defined]
+                else:
+                    sink.close()
             except BaseException as exc:
-                release_error = exc
+                close_error = exc
                 LOGGER.exception("关闭视频编码器失败")
         if source is not None:
             try:
@@ -215,9 +254,9 @@ def record_screen(
         if isinstance(capture_error, RecordingError):
             raise capture_error
         raise RecordingError(f"录制失败：{capture_error}") from capture_error
-    if release_error is not None:
+    if close_error is not None:
         _remove_partial_file(output_path)
-        raise RecordingError(f"保存视频失败：{release_error}") from release_error
+        raise RecordingError(f"保存视频失败：{close_error}") from close_error
 
     if frame_count == 0 or last_frame is None:
         _remove_partial_file(output_path)
@@ -229,17 +268,20 @@ def record_screen(
 
     elapsed = min(time.perf_counter() - started_at, duration_seconds)
     LOGGER.info(
-        "录制完成：%s，%d 帧，%.1f 秒%s",
+        "视频录制完成：%s，%d 帧，%.1f 秒，%d FPS，%d kbps%s",
         output_path,
         frame_count,
         elapsed,
+        settings.fps,
+        settings.bitrate_kbps,
         "（提前停止）" if stopped_early else "",
     )
-    return RecordingResult(
+    return VideoCaptureResult(
         path=output_path,
         frame_count=frame_count,
-        duration_seconds=elapsed,
+        elapsed_seconds=elapsed,
         stopped_early=stopped_early,
+        fps=settings.fps,
     )
 
 

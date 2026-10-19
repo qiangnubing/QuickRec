@@ -14,21 +14,28 @@ import numpy as np
 from short_video_capture.capture import (
     CaptureRegion,
     RecordingError,
-    record_screen,
+    VideoSettings,
+    record_video,
 )
 
 
 class FakeSource:
-    def __init__(self, region: CaptureRegion, on_grab=None) -> None:
+    def __init__(
+        self, region: CaptureRegion, on_grab=None, grab_delay: float = 0.0
+    ) -> None:
         self.region = region
         self.on_grab = on_grab
+        self.grab_delay = grab_delay
         self.closed = False
         self.grabs = 0
 
     def grab(self) -> np.ndarray:
         self.grabs += 1
+        if self.grab_delay:
+            time.sleep(self.grab_delay)
         frame = np.zeros((self.region.height, self.region.width, 4), dtype=np.uint8)
         frame[:, :, 3] = 255
+        frame[0, 0, 0] = self.grabs % 251
         if self.on_grab is not None:
             self.on_grab()
         return frame
@@ -37,27 +44,33 @@ class FakeSource:
         self.closed = True
 
 
-class FakeWriter:
-    instances: list["FakeWriter"] = []
+class FakeSink:
+    instances: list["FakeSink"] = []
 
-    def __init__(self, path: Path, fps: int, region: CaptureRegion) -> None:
+    def __init__(
+        self,
+        path: Path,
+        region: CaptureRegion,
+        fps: int,
+        bitrate_kbps: int,
+    ) -> None:
         self.path = path
-        self.fps = fps
         self.region = region
+        self.fps = fps
+        self.bitrate_kbps = bitrate_kbps
         self.frames: list[np.ndarray] = []
-        self.released = False
-        self.is_open = True
-        FakeWriter.instances.append(self)
-
-    def isOpened(self) -> bool:
-        return self.is_open
+        self.closed = False
+        FakeSink.instances.append(self)
 
     def write(self, frame: np.ndarray) -> None:
         self.frames.append(frame.copy())
 
-    def release(self) -> None:
-        self.released = True
+    def close(self) -> None:
+        self.closed = True
         self.path.write_bytes(b"fake-mp4")
+
+    def abort(self) -> None:
+        self.closed = True
 
 
 class CaptureRegionTests(unittest.TestCase):
@@ -74,16 +87,32 @@ class CaptureRegionTests(unittest.TestCase):
         )
 
 
-class RecordScreenTests(unittest.TestCase):
+class VideoSettingsTests(unittest.TestCase):
+    def test_valid_settings(self) -> None:
+        settings = VideoSettings(30, 8_000)
+        self.assertEqual(settings.bitrate_mbps, 8.0)
+
+    def test_rejects_out_of_range(self) -> None:
+        with self.assertRaises(ValueError):
+            VideoSettings(fps=4)
+        with self.assertRaises(ValueError):
+            VideoSettings(fps=61)
+        with self.assertRaises(ValueError):
+            VideoSettings(bitrate_kbps=100)
+        with self.assertRaises(ValueError):
+            VideoSettings(bitrate_kbps=60_000)
+
+
+class RecordVideoTests(unittest.TestCase):
     def setUp(self) -> None:
-        FakeWriter.instances.clear()
+        FakeSink.instances.clear()
         self._temp_dir = tempfile.TemporaryDirectory()
         self.directory = Path(self._temp_dir.name)
 
     def tearDown(self) -> None:
         self._temp_dir.cleanup()
 
-    def test_records_frames_and_pads_to_requested_length(self) -> None:
+    def test_records_frames_with_requested_settings(self) -> None:
         source_holder: list[FakeSource] = []
 
         def source_factory(region: CaptureRegion) -> FakeSource:
@@ -92,24 +121,47 @@ class RecordScreenTests(unittest.TestCase):
             return source
 
         output = self.directory / "录 制 测试.mp4"
-        result = record_screen(
+        result = record_video(
             CaptureRegion(5, 5, 101, 51),
             output,
             duration_seconds=0.12,
-            fps=20,
+            settings=VideoSettings(20, 4_000),
             source_factory=source_factory,
-            writer_factory=FakeWriter,
+            sink_factory=FakeSink,
         )
 
         self.assertTrue(output.is_file())
         self.assertEqual(result.frame_count, 3)
+        self.assertAlmostEqual(result.duration_seconds, 0.15)
         self.assertFalse(result.stopped_early)
-        writer = FakeWriter.instances[-1]
-        self.assertTrue(writer.released)
-        self.assertEqual((writer.region.width, writer.region.height), (100, 50))
-        self.assertEqual(len(writer.frames), 3)
-        self.assertEqual(writer.frames[0].shape, (50, 100, 3))
+        sink = FakeSink.instances[-1]
+        self.assertTrue(sink.closed)
+        self.assertEqual((sink.region.width, sink.region.height), (100, 50))
+        self.assertEqual((sink.fps, sink.bitrate_kbps), (20, 4_000))
+        self.assertEqual(len(sink.frames), 3)
+        self.assertEqual(sink.frames[0].shape, (50, 100, 4))
         self.assertTrue(source_holder[0].closed)
+
+    def test_high_fps_does_not_freeze_at_end(self) -> None:
+        def source_factory(region: CaptureRegion) -> FakeSource:
+            return FakeSource(region, grab_delay=0.03)
+
+        output = self.directory / "high-fps.mp4"
+        started = time.perf_counter()
+        result = record_video(
+            CaptureRegion(0, 0, 64, 64),
+            output,
+            duration_seconds=0.2,
+            settings=VideoSettings(60, 8_000),
+            source_factory=source_factory,
+            sink_factory=FakeSink,
+        )
+
+        self.assertEqual(result.frame_count, 12)
+        self.assertLess(time.perf_counter() - started, 0.8)
+        frames = FakeSink.instances[-1].frames
+        self.assertEqual(len(frames), 12)
+        self.assertGreater(len({frame.tobytes() for frame in frames}), 1)
 
     def test_stop_event_stops_early_without_padding(self) -> None:
         stop_event = threading.Event()
@@ -119,57 +171,56 @@ class RecordScreenTests(unittest.TestCase):
 
         output = self.directory / "stopped.mp4"
         started = time.perf_counter()
-        result = record_screen(
+        result = record_video(
             CaptureRegion(0, 0, 64, 64),
             output,
             duration_seconds=5,
-            fps=20,
+            settings=VideoSettings(20, 4_000),
             stop_event=stop_event,
             source_factory=source_factory,
-            writer_factory=FakeWriter,
+            sink_factory=FakeSink,
         )
 
         self.assertLess(time.perf_counter() - started, 1.0)
         self.assertTrue(result.stopped_early)
         self.assertEqual(result.frame_count, 1)
-        self.assertEqual(len(FakeWriter.instances[-1].frames), 1)
+        self.assertEqual(len(FakeSink.instances[-1].frames), 1)
 
     def test_no_frames_raises_and_removes_partial_file(self) -> None:
         stop_event = threading.Event()
         stop_event.set()
         output = self.directory / "empty.mp4"
         with self.assertRaises(RecordingError):
-            record_screen(
+            record_video(
                 CaptureRegion(0, 0, 64, 64),
                 output,
                 duration_seconds=1,
-                fps=20,
+                settings=VideoSettings(20, 4_000),
                 stop_event=stop_event,
-                writer_factory=FakeWriter,
+                sink_factory=FakeSink,
             )
         self.assertFalse(output.exists())
 
-    def test_rejects_invalid_parameters(self) -> None:
+    def test_rejects_invalid_duration(self) -> None:
         with self.assertRaises(ValueError):
-            record_screen(CaptureRegion(0, 0, 64, 64), self.directory / "a.mp4", 0)
-        with self.assertRaises(ValueError):
-            record_screen(
+            record_video(
                 CaptureRegion(0, 0, 64, 64),
-                self.directory / "b.mp4",
-                1,
-                fps=0,
+                self.directory / "a.mp4",
+                duration_seconds=0,
+                settings=VideoSettings(),
+                sink_factory=FakeSink,
             )
 
     def test_refuses_to_overwrite_existing_file(self) -> None:
         output = self.directory / "existing.mp4"
         output.write_bytes(b"keep-me")
         with self.assertRaises(RecordingError):
-            record_screen(
+            record_video(
                 CaptureRegion(0, 0, 64, 64),
                 output,
                 duration_seconds=1,
-                fps=20,
-                writer_factory=FakeWriter,
+                settings=VideoSettings(),
+                sink_factory=FakeSink,
             )
         self.assertEqual(output.read_bytes(), b"keep-me")
 
