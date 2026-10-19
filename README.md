@@ -16,7 +16,7 @@ Windows 桌面屏幕区域录制工具。支持预置时长与任意自定义时
 - 鼠标指针：默认绘制到录制画面中，可在“画面与声音”中关闭。
 - 声音：可单独或同时录制“系统声音（扬声器环回）”和“麦克风”，可选择具体设备，并设置 AAC 音频码率。
 - 视频使用 H.264 编码、音频使用 AAC，最终合成为带音轨的 MP4。
-- 保存目录可自由选择，默认使用 Windows“视频”文件夹；若该文件夹不可写，启动时会自动切换到项目内 `output` 目录并在状态栏提示。
+- 保存目录可自由选择，默认使用 Windows“视频”文件夹；若该文件夹不可写，启动时会自动切换到程序目录（源码运行时为项目根目录）的 `output` 目录并在状态栏提示。
 - 目录选择使用内置 Tk 选择器，不依赖 Windows Shell 对话框，避免在受限环境中卡死。
 - 录制开始后主窗口自动隐藏到系统托盘，右下角显示录制倒计时；倒计时框内提供“停止”按钮，可随时结束录制并保存。
 - 点击窗口右上角最小化时，也会隐藏到系统托盘；托盘菜单可恢复主界面。
@@ -31,6 +31,7 @@ Windows 桌面屏幕区域录制工具。支持预置时长与任意自定义时
 - Windows 10 / 11
 - Python 3.12+
 - 依赖：`mss`、`numpy`、`soundcard`、`imageio-ffmpeg`
+- 打包单文件 exe 需要额外安装 `pyinstaller`（仅构建机需要）。
 - `soundcard` 使用 Windows WASAPI，提供系统声音环回与麦克风采集。
 - `imageio-ffmpeg` 自带 FFmpeg 可执行文件，无需另外安装 FFmpeg。
 - Tkinter 随 Windows 版 Python 一起安装。
@@ -70,6 +71,43 @@ screen-recorder
 python -m pip install mss numpy soundcard imageio-ffmpeg
 python run.py
 ```
+
+## 打包为单文件 exe
+
+需要 64 位 Python 3.12 和已装好依赖的虚拟环境。项目已包含 PyInstaller 配置与构建脚本：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+.\.venv\Scripts\python.exe packaging\build_exe.py
+```
+
+构建脚本会先运行单元测试，再用 `packaging\short_video_capture.spec` 生成：
+
+```text
+dist\屏幕录制工具.exe
+```
+
+产物是单个自包含文件，目标电脑无需安装 Python、Tk 或 FFmpeg。构建结束后脚本会自动启动该 exe 执行打包自检，检查依赖导入、应用图标、Tk、屏幕采集、内置 FFmpeg 的 H.264/AAC 编码以及音频设备枚举。
+
+常用参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--skip-tests` | 跳过单元测试（不建议） |
+| `--skip-smoke-test` | 跳过成品自检（仅在无法启动图形界面时使用） |
+
+也可以直接调用 PyInstaller：
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\short_video_capture.spec
+```
+
+打包说明：
+
+- 单文件模式首次启动时会把运行时解压到系统临时目录，启动比源码运行稍慢；退出后临时目录自动清理。
+- 程序未做代码签名，复制到其他电脑首次运行时 Windows SmartScreen 可能提示“未知发布者”，选择“更多信息 → 仍要运行”即可。
+- 少数杀毒软件可能对 PyInstaller 单文件程序误报，可将 exe 加入信任列表，或改用源码方式运行。
+- 不要把 exe 放在只读目录：若系统“视频”文件夹不可写，程序会将录制文件保存到 exe 同目录的 `output` 文件夹。
 
 ## 使用方法
 
@@ -126,6 +164,11 @@ python run.py
 .
 ├── run.py                         # 免安装启动入口
 ├── pyproject.toml                 # 依赖与打包配置
+├── packaging/
+│   ├── build_exe.py               # 单文件构建与成品自检
+│   ├── launcher.py                # PyInstaller 打包入口
+│   ├── short_video_capture.spec   # PyInstaller 配置
+│   └── version_info.txt           # exe 版本信息
 ├── src/short_video_capture/
 │   ├── app.py                     # 主界面与录制流程
 │   ├── capture.py                 # 屏幕采集与逐帧调度

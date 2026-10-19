@@ -6,6 +6,7 @@ import ctypes
 import os
 import secrets
 import subprocess
+import sys
 import tempfile
 from ctypes import wintypes
 from datetime import datetime
@@ -153,11 +154,24 @@ def _probe_writable(directory: Path) -> None:
         pass
 
 
+def application_dir() -> Path:
+    """返回程序所在目录。
+
+    源码运行时为项目根目录；PyInstaller 单文件运行时为 exe 所在目录。
+    不能使用 ``__file__``，因为单文件模式的模块会被解压到临时目录，
+    程序退出后该目录即被删除。
+    """
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
 def fallback_output_dir() -> Path:
-    """当默认视频文件夹不可写时，返回一个可用的项目内输出目录。"""
+    """当默认视频文件夹不可写时，返回一个可用的本地输出目录。"""
 
     candidates = [
-        Path(__file__).resolve().parents[2] / "output",
+        application_dir() / "output",
         Path.cwd() / "output",
         Path(tempfile.gettempdir()) / "屏幕录制",
     ]

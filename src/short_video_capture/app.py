@@ -163,7 +163,7 @@ class RecorderApp:
 
     @staticmethod
     def _resolve_initial_directory(settings: AppSettings) -> tuple[str, str, str]:
-        """默认视频文件夹不可写时，自动切换到项目内可写目录。"""
+        """默认视频文件夹不可写时，自动切换到程序目录下的可写输出目录。"""
 
         default_directory = default_videos_dir()
         saved = settings.output_dir.strip()

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from short_video_capture.paths import (
     OutputDirectoryError,
+    application_dir,
     build_output_path,
     ensure_output_dir,
     fallback_output_dir,
@@ -29,6 +32,19 @@ class OutputDirectoryTests(unittest.TestCase):
     def test_fallback_directory_is_writable(self) -> None:
         directory = fallback_output_dir()
         self.assertTrue(directory.is_dir())
+
+    def test_application_dir_is_project_root_in_source_mode(self) -> None:
+        self.assertFalse(getattr(sys, "frozen", False))
+        self.assertEqual(application_dir(), Path(__file__).resolve().parents[1])
+
+    def test_application_dir_follows_executable_when_frozen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            executable = Path(temp) / "工具" / "屏幕录制工具.exe"
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(executable)),
+            ):
+                self.assertEqual(application_dir(), executable.parent)
 
 
 class OutputPathTests(unittest.TestCase):
