@@ -699,12 +699,13 @@ class RecorderApp:
                 text="系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
                 fg=_MUTED,
             )
-        self.system_audio_var.set(
-            self.system_audio_var.get() and bool(devices.system)
-        )
-        self.microphone_var.set(
-            self.microphone_var.get() and bool(devices.microphones)
-        )
+        if not devices.error:
+            self.system_audio_var.set(
+                self.system_audio_var.get() and bool(devices.system)
+            )
+            self.microphone_var.set(
+                self.microphone_var.get() and bool(devices.microphones)
+            )
         self._sync_audio_controls()
 
     def _populate_device_combo(
@@ -751,11 +752,11 @@ class RecorderApp:
                 else "disabled"
             )
         )
-        if not self._audio_devices.system:
+        if not self._audio_devices.system and not self._audio_devices.error:
             self._system_check.configure(state="disabled")
         else:
             self._system_check.configure(state="normal")
-        if not self._audio_devices.microphones:
+        if not self._audio_devices.microphones and not self._audio_devices.error:
             self._microphone_check.configure(state="disabled")
         else:
             self._microphone_check.configure(state="normal")
@@ -1323,7 +1324,10 @@ class RecorderApp:
 
 def device_error_text(error: str) -> str:
     if "soundcard" in error:
-        return "音频组件未安装：请执行 python -m pip install -e ."
+        return (
+            "音频组件未安装：请执行 python -m pip install -e .，"
+            "或使用项目 .venv\\Scripts\\python run.py 启动。"
+        )
     return f"音频设备不可用：{error}"
 
 

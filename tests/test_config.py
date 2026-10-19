@@ -124,6 +124,41 @@ class SettingsStoreTests(unittest.TestCase):
         )
         self.assertEqual(self.store.load(), AppSettings())
 
+    def test_unconfigured_audio_defaults_to_system_sound(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(
+            json.dumps(
+                {
+                    "duration_seconds": 10,
+                    "system_audio_enabled": False,
+                    "microphone_enabled": False,
+                    "system_audio_device": "",
+                    "microphone_device": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(self.store.load().system_audio_enabled)
+
+    def test_explicit_audio_off_is_preserved(self) -> None:
+        settings = AppSettings(
+            system_audio_enabled=False,
+            microphone_enabled=False,
+            system_audio_device="speaker-id",
+            microphone_device="mic-id",
+        )
+        self.store.save(settings)
+        loaded = self.store.load()
+        self.assertFalse(loaded.system_audio_enabled)
+        self.assertFalse(loaded.microphone_enabled)
+
+    def test_explicit_audio_off_without_devices_is_preserved_after_save(self) -> None:
+        settings = AppSettings(system_audio_enabled=False, microphone_enabled=False)
+        self.store.save(settings)
+        loaded = self.store.load()
+        self.assertFalse(loaded.system_audio_enabled)
+        self.assertFalse(loaded.microphone_enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,6 +44,14 @@ python run.py
 不希望保留控制台窗口时，可以使用 `pythonw run.py` 启动；运行日志仍会写入
 `%LOCALAPPDATA%\ShortVideoCapture\app.log`。
 
+如果项目内存在已安装依赖的 `.venv`，而当前 `python` 缺少音视频组件，
+`run.py` 会自动切换到 `.venv\Scripts\pythonw.exe` 启动，避免出现
+“音频组件未安装”的提示。也可以手动执行：
+
+```powershell
+.\.venv\Scripts\python run.py
+```
+
 也可以安装后直接运行命令：
 
 ```powershell

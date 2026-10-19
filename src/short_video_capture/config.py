@@ -24,6 +24,7 @@ MAX_AUDIO_BITRATE_KBPS = 512
 DEFAULT_FPS = 30
 DEFAULT_VIDEO_BITRATE_MBPS = 8.0
 DEFAULT_AUDIO_BITRATE_KBPS = 192
+SETTINGS_VERSION = 2
 
 
 def parse_duration(text: str) -> int:
@@ -115,6 +116,8 @@ class AppSettings:
             MIN_AUDIO_BITRATE_KBPS,
             MAX_AUDIO_BITRATE_KBPS,
         )
+        system_audio_device = self.system_audio_device.strip()
+        microphone_device = self.microphone_device.strip()
         return AppSettings(
             duration_seconds=duration,
             output_dir=self.output_dir.strip(),
@@ -123,8 +126,8 @@ class AppSettings:
             audio_bitrate_kbps=audio_bitrate,
             system_audio_enabled=bool(self.system_audio_enabled),
             microphone_enabled=bool(self.microphone_enabled),
-            system_audio_device=self.system_audio_device.strip(),
-            microphone_device=self.microphone_device.strip(),
+            system_audio_device=system_audio_device,
+            microphone_device=microphone_device,
         )
 
 
@@ -170,7 +173,7 @@ class SettingsStore:
         if not isinstance(data, dict):
             return AppSettings()
 
-        return AppSettings(
+        loaded = AppSettings(
             duration_seconds=_as_int(data.get("duration_seconds"), DEFAULT_DURATION),
             output_dir=_as_str(data.get("output_dir")),
             fps=_as_int(data.get("fps"), DEFAULT_FPS),
@@ -185,14 +188,28 @@ class SettingsStore:
             system_audio_device=_as_str(data.get("system_audio_device")),
             microphone_device=_as_str(data.get("microphone_device")),
         ).normalized()
+        schema_version = _as_int(data.get("schema_version"), 1)
+        if (
+            schema_version < 2
+            and not loaded.system_audio_enabled
+            and not loaded.microphone_enabled
+            and not loaded.system_audio_device
+            and not loaded.microphone_device
+        ):
+            # 旧版本在缺少音频依赖时可能写入“两路都关闭、无设备”的配置，
+            # 这更可能是失败残留而不是有意选择；升级后恢复默认系统声音。
+            loaded.system_audio_enabled = True
+        return loaded
 
     def save(self, settings: AppSettings) -> None:
         normalized = settings.normalized()
+        payload = asdict(normalized)
+        payload["schema_version"] = SETTINGS_VERSION
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self._path.with_suffix(".tmp")
             temporary.write_text(
-                json.dumps(asdict(normalized), ensure_ascii=False, indent=2),
+                json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             temporary.replace(self._path)
