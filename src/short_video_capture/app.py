@@ -220,13 +220,37 @@ class RecorderApp:
             pass
         style.configure(
             "Recorder.TCombobox",
-            fieldbackground=_FIELD_BG,
-            background="#E2E8F0",
+            fieldbackground=_CARD_BG,
+            background=_CARD_BG,
             foreground=_TEXT,
             arrowcolor="#475569",
             padding=4,
             font=("Microsoft YaHei UI", 9),
         )
+        style.map(
+            "Recorder.TCombobox",
+            fieldbackground=[
+                ("readonly", _CARD_BG),
+                ("disabled", "#F1F5F9"),
+            ],
+            foreground=[("readonly", _TEXT), ("disabled", _MUTED)],
+            selectbackground=[("readonly", _CARD_BG)],
+            selectforeground=[("readonly", _TEXT)],
+            background=[("readonly", _CARD_BG), ("disabled", "#F1F5F9")],
+        )
+
+        # Tk 的 Combobox 下拉列表是独立的 Listbox，需要单独设置选项数据库。
+        dropdown_options = {
+            "background": _CARD_BG,
+            "foreground": _TEXT,
+            "selectBackground": "#DBEAFE",
+            "selectForeground": _TEXT,
+            "font": "{Microsoft YaHei UI} 9",
+            "borderWidth": "0",
+            "highlightThickness": "0",
+        }
+        for option, value in dropdown_options.items():
+            self.root.option_add(f"*TCombobox*Listbox.{option}", value)
 
     def _fit_and_center_window(self) -> None:
         self.root.update_idletasks()

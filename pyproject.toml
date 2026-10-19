@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "short-video-capture"
-version = "1.2.0"
+version = "1.2.1"
 description = "Windows 屏幕区域录制工具，支持自定义时长、画质与系统音频"
 readme = "README.md"
 requires-python = ">=3.12"
