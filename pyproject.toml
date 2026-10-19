@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "short-video-capture"
+version = "1.0.0"
+description = "Windows 屏幕区域定时录制工具"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mss>=10.0",
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+]
+
+[project.scripts]
+screen-recorder = "short_video_capture.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+short_video_capture = ["assets/*.ico", "assets/*.png"]
