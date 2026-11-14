@@ -83,6 +83,21 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(loaded, settings)
         self.assertFalse(loaded.record_cursor)
 
+    def test_max_duration_and_language_round_trip(self) -> None:
+        settings = AppSettings(duration_seconds=0, language="en")
+        self.store.save(settings)
+        loaded = self.store.load()
+        self.assertEqual(loaded.duration_seconds, 0)
+        self.assertEqual(loaded.language, "en")
+
+    def test_unknown_language_falls_back_to_chinese(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(
+            json.dumps({"language": "fr", "duration_seconds": 10}),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.store.load().language, "zh")
+
     def test_invalid_duration_falls_back(self) -> None:
         self.path.parent.mkdir(parents=True)
         self.path.write_text(

@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "short-video-capture"
-version = "1.2.2"
-description = "Windows 屏幕区域录制工具，支持自定义时长、画质与系统音频"
+name = "quickrec"
+version = "1.3.0"
+description = "QuickRec — Windows 屏幕区域录制工具，支持 60 秒/MAX、中英文界面、画质与系统音频"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+quickrec = "short_video_capture.__main__:main"
 screen-recorder = "short_video_capture.__main__:main"
 
 [tool.setuptools]

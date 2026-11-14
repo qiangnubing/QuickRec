@@ -20,10 +20,11 @@ from .audio import (
     list_audio_devices,
     unique_device_labels,
 )
-from .capture import CaptureRegion, VideoSettings
+from .capture import CaptureRegion, NoFramesError, VideoSettings
 from .config import (
     AUDIO_BITRATE_OPTIONS,
     DURATION_OPTIONS,
+    MAX_DURATION_SENTINEL,
     AppSettings,
     SettingsStore,
     parse_audio_bitrate_kbps,
@@ -33,6 +34,7 @@ from .config import (
 )
 from .countdown import CountdownOverlay
 from .directory_picker import ask_directory
+from .i18n import LANGUAGES, get_language, language_name, set_language, tr
 from .media import FFmpegError, find_ffmpeg
 from .paths import (
     OutputDirectoryError,
@@ -50,7 +52,7 @@ from .win32 import enable_dpi_awareness
 
 LOGGER = logging.getLogger(__name__)
 
-APP_TITLE = "屏幕录制工具"
+APP_TITLE = "QuickRec"
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 ICON_ICO = ASSETS_DIR / "app.ico"
 ICON_PNG = ASSETS_DIR / "app_64.png"
@@ -76,25 +78,13 @@ _FINISHING = "finishing"
 
 WindowEvent = tuple[str, object]
 
-_RECORDING_MENU: tuple[TrayMenuItem | None, ...] = (
-    ("停止并保存", "stop"),
-    ("取消录制", "cancel"),
-    None,
-    ("退出程序（放弃录制）", "exit"),
-)
-_IDLE_MENU: tuple[TrayMenuItem | None, ...] = (
-    ("显示主界面", "show"),
-    None,
-    ("退出程序", "exit"),
-)
-_IDLE_STATUS = "就绪，选择时长和保存位置后开始录制。"
-
 
 class RecorderApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self._settings_store = SettingsStore()
         settings = self._settings_store.load()
+        self._language = set_language(settings.language)
         initial_directory, initial_notice, notice_color = self._resolve_initial_directory(
             settings
         )
@@ -129,9 +119,16 @@ class RecorderApp:
         self._system_device_map: dict[str, str] = {}
         self._microphone_device_map: dict[str, str] = {}
 
-        self.duration_text = tk.StringVar(value=str(settings.duration_seconds))
+        self.duration_text = tk.StringVar(
+            value=(
+                "MAX"
+                if settings.duration_seconds == MAX_DURATION_SENTINEL
+                else str(settings.duration_seconds)
+            )
+        )
+        self.language_var = tk.StringVar(value=language_name(self._language))
         self.output_var = tk.StringVar(value=initial_directory)
-        self.status_var = tk.StringVar(value=_IDLE_STATUS)
+        self.status_var = tk.StringVar(value=self._idle_status())
         self.fps_var = tk.StringVar(value=str(settings.fps))
         self.video_bitrate_var = tk.StringVar(
             value=f"{settings.video_bitrate_mbps:g}"
@@ -150,7 +147,7 @@ class RecorderApp:
         self.duration_text.trace_add("write", self._on_duration_text_changed)
         self._choose_duration(settings.duration_seconds)
         self._on_duration_text_changed()
-        self._set_status(_IDLE_STATUS, _MUTED)
+        self._set_status(self._idle_status(), _MUTED)
         self._refresh_audio_devices(
             preferred_system_id=settings.system_audio_device or None,
             preferred_microphone_id=settings.microphone_device or None,
@@ -160,6 +157,13 @@ class RecorderApp:
             self._set_status(self._initial_notice, self._initial_notice_color)
         self.root.bind("<Unmap>", self._on_root_unmap, add="+")
         self._poll_job = self.root.after(100, self._poll_events)
+
+    @staticmethod
+    def _idle_status() -> str:
+        return tr(
+            "就绪，选择时长和保存位置后开始录制。",
+            "Ready. Choose a duration and save location to start.",
+        )
 
     @staticmethod
     def _resolve_initial_directory(settings: AppSettings) -> tuple[str, str, str]:
@@ -188,7 +192,11 @@ class RecorderApp:
                 return str(default_directory), str(exc), _WARN
             return (
                 str(fallback),
-                f"默认视频文件夹不可写，已切换到：{fallback}",
+                tr(
+                    "默认视频文件夹不可写，已切换到：{path}",
+                    "The default Videos folder is not writable. Switched to: {path}",
+                    path=fallback,
+                ),
                 _INFO,
             )
 
@@ -264,6 +272,8 @@ class RecorderApp:
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build_ui(self) -> None:
+        for child in self.root.winfo_children():
+            child.destroy()
         header = tk.Frame(self.root, bg=_HEADER_BG)
         header.pack(fill="x")
         header_inner = tk.Frame(header, bg=_HEADER_BG)
@@ -274,11 +284,34 @@ class RecorderApp:
                 header_inner, image=self._icon_image, bg=_HEADER_BG, bd=0
             ).pack(side="left", padx=(0, 16))
 
+        language_box = tk.Frame(header_inner, bg=_HEADER_BG)
+        language_box.pack(side="right", padx=(12, 0), anchor="n")
+        tk.Label(
+            language_box,
+            text=tr("语言", "Language"),
+            bg=_HEADER_BG,
+            fg="#94A3B8",
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left", padx=(0, 6))
+        self._language_combo = ttk.Combobox(
+            language_box,
+            textvariable=self.language_var,
+            values=[label for _code, label in LANGUAGES],
+            state="readonly",
+            width=8,
+            style="Recorder.TCombobox",
+            font=("Microsoft YaHei UI", 9),
+        )
+        self._language_combo.pack(side="left")
+        self._language_combo.bind(
+            "<<ComboboxSelected>>", self._on_language_selected
+        )
+
         title_area = tk.Frame(header_inner, bg=_HEADER_BG)
         title_area.pack(side="left", fill="x", expand=True)
         tk.Label(
             title_area,
-            text="屏幕录制",
+            text="QuickRec",
             bg=_HEADER_BG,
             fg="#F8FAFC",
             font=("Microsoft YaHei UI", 20, "bold"),
@@ -286,7 +319,10 @@ class RecorderApp:
         ).pack(fill="x")
         tk.Label(
             title_area,
-            text="框选区域 · 自定义时长 · 画面与声音",
+            text=tr(
+                "框选区域 · 自定义时长 · 画面与声音",
+                "Select an area · Custom duration · Video & audio",
+            ),
             bg=_HEADER_BG,
             fg="#94A3B8",
             font=("Microsoft YaHei UI", 10),
@@ -302,7 +338,7 @@ class RecorderApp:
 
         self._start_button = tk.Button(
             body,
-            text="开始录制",
+            text=tr("开始录制", "Start recording"),
             command=self._start_flow,
             bg=_ACCENT,
             fg="#FFFFFF",
@@ -321,7 +357,10 @@ class RecorderApp:
 
         tk.Label(
             body,
-            text="录制时自动隐藏到系统托盘；最小化窗口也会隐藏到托盘。",
+            text=tr(
+                "录制时自动隐藏到系统托盘；最小化窗口也会隐藏到托盘。",
+                "Recording hides to the system tray; minimizing also hides it.",
+            ),
             bg=_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -348,7 +387,7 @@ class RecorderApp:
         title_row.pack(fill="x")
         tk.Label(
             title_row,
-            text="录制时长",
+            text=tr("录制时长", "Duration"),
             bg=_CARD_BG,
             fg=_TEXT,
             font=("Microsoft YaHei UI", 10, "bold"),
@@ -356,7 +395,7 @@ class RecorderApp:
         ).pack(side="left")
         tk.Label(
             title_row,
-            text="1–86400 秒",
+            text=tr("1–86400 秒 / MAX", "1–86400 sec / MAX"),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -365,10 +404,14 @@ class RecorderApp:
         row = tk.Frame(card, bg=_CARD_BG)
         row.pack(fill="x", pady=(8, 0))
         self._duration_buttons: dict[int, tk.Button] = {}
-        for seconds in DURATION_OPTIONS:
+        presets = [(0, "MAX")] + [
+            (seconds, tr(f"{seconds} 秒", f"{seconds}s"))
+            for seconds in DURATION_OPTIONS
+        ]
+        for seconds, label in presets:
             button = tk.Button(
                 row,
-                text=f"{seconds} 秒",
+                text=label,
                 command=lambda value=seconds: self._choose_duration(value),
                 width=9,
                 pady=8,
@@ -383,7 +426,7 @@ class RecorderApp:
 
         tk.Label(
             row,
-            text="自定义",
+            text=tr("自定义", "Custom"),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -408,7 +451,7 @@ class RecorderApp:
         ).pack(side="left", ipady=5)
         tk.Label(
             row,
-            text="秒",
+            text=tr("秒", "sec"),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -420,7 +463,7 @@ class RecorderApp:
         title_row.pack(fill="x")
         tk.Label(
             title_row,
-            text="画面与声音",
+            text=tr("画面与声音", "Video & audio"),
             bg=_CARD_BG,
             fg=_TEXT,
             font=("Microsoft YaHei UI", 10, "bold"),
@@ -428,7 +471,7 @@ class RecorderApp:
         ).pack(side="left")
         tk.Button(
             title_row,
-            text="刷新设备",
+            text=tr("刷新设备", "Refresh devices"),
             command=self._refresh_audio_devices,
             bg=_CARD_BG,
             fg=_INFO,
@@ -443,17 +486,28 @@ class RecorderApp:
 
         quality = tk.Frame(card, bg=_CARD_BG)
         quality.pack(fill="x", pady=(8, 6))
-        self._field_group(quality, "帧率", self.fps_var, "FPS", width=5).pack(
-            side="left", padx=(0, 22)
-        )
         self._field_group(
-            quality, "视频码率", self.video_bitrate_var, "Mbps", width=6
+            quality,
+            tr("帧率", "FPS"),
+            self.fps_var,
+            "FPS",
+            width=5,
+            minimum=5,
+            maximum=60,
+            step=1,
+        ).pack(side="left", padx=(0, 22))
+        self._field_group(
+            quality,
+            tr("视频码率", "Video bitrate"),
+            self.video_bitrate_var,
+            "Mbps",
+            width=6,
         ).pack(side="left", padx=(0, 22))
         audio_group = tk.Frame(quality, bg=_CARD_BG)
         audio_group.pack(side="left")
         tk.Label(
             audio_group,
-            text="音频码率",
+            text=tr("音频码率", "Audio bitrate"),
             bg=_CARD_BG,
             fg=_TEXT,
             font=("Microsoft YaHei UI", 9),
@@ -480,7 +534,7 @@ class RecorderApp:
         ).pack(side="left", padx=(4, 0))
         self._cursor_check = tk.Checkbutton(
             quality,
-            text="录制鼠标指针",
+            text=tr("录制鼠标指针", "Record cursor"),
             variable=self.record_cursor_var,
             bg=_CARD_BG,
             activebackground=_CARD_BG,
@@ -500,7 +554,7 @@ class RecorderApp:
         system_row.pack(fill="x", pady=(0, 5))
         self._system_check = tk.Checkbutton(
             system_row,
-            text="系统声音",
+            text=tr("系统声音", "System audio"),
             variable=self.system_audio_var,
             command=self._sync_audio_controls,
             bg=_CARD_BG,
@@ -509,7 +563,7 @@ class RecorderApp:
             fg=_TEXT,
             activeforeground=_TEXT,
             anchor="w",
-            width=9,
+            width=12,
             highlightthickness=0,
             bd=0,
             font=("Microsoft YaHei UI", 9),
@@ -529,7 +583,7 @@ class RecorderApp:
         microphone_row.pack(fill="x", pady=(0, 5))
         self._microphone_check = tk.Checkbutton(
             microphone_row,
-            text="麦克风",
+            text=tr("麦克风", "Microphone"),
             variable=self.microphone_var,
             command=self._sync_audio_controls,
             bg=_CARD_BG,
@@ -538,7 +592,7 @@ class RecorderApp:
             fg=_TEXT,
             activeforeground=_TEXT,
             anchor="w",
-            width=9,
+            width=12,
             highlightthickness=0,
             bd=0,
             font=("Microsoft YaHei UI", 9),
@@ -556,7 +610,10 @@ class RecorderApp:
 
         self._audio_note = tk.Label(
             card,
-            text="系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
+            text=tr(
+                "系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
+                "System audio is captured via speaker loopback and mixed into one AAC track.",
+            ),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 8),
@@ -574,6 +631,9 @@ class RecorderApp:
         unit: str,
         *,
         width: int,
+        minimum: float = 0.5,
+        maximum: float = 50,
+        step: float = 0.5,
     ) -> tk.Frame:
         group = tk.Frame(parent, bg=_CARD_BG)
         tk.Label(
@@ -588,9 +648,9 @@ class RecorderApp:
         value_row.pack(anchor="w", pady=(3, 0))
         tk.Spinbox(
             value_row,
-            from_=5 if label == "帧率" else 0.5,
-            to=60 if label == "帧率" else 50,
-            increment=1 if label == "帧率" else 0.5,
+            from_=minimum,
+            to=maximum,
+            increment=step,
             width=width,
             textvariable=variable,
             bg=_FIELD_BG,
@@ -619,7 +679,7 @@ class RecorderApp:
         output_header.pack(fill="x")
         tk.Label(
             output_header,
-            text="保存位置",
+            text=tr("保存位置", "Save location"),
             bg=_CARD_BG,
             fg=_TEXT,
             font=("Microsoft YaHei UI", 10, "bold"),
@@ -627,7 +687,7 @@ class RecorderApp:
         ).pack(side="left")
         tk.Button(
             output_header,
-            text="打开文件夹",
+            text=tr("打开文件夹", "Open folder"),
             command=self._open_output_folder,
             bg=_CARD_BG,
             fg=_INFO,
@@ -661,7 +721,7 @@ class RecorderApp:
         self._path_entry.pack(side="left", fill="x", expand=True, padx=12, pady=9)
         tk.Button(
             path_row,
-            text="浏览…",
+            text=tr("浏览…", "Browse…"),
             command=self._browse_output,
             bg="#E2E8F0",
             fg="#334155",
@@ -678,7 +738,10 @@ class RecorderApp:
 
         tk.Label(
             card,
-            text="视频保存为 MP4（H.264），默认使用 Windows 视频文件夹。",
+            text=tr(
+                "视频保存为 MP4（H.264），默认使用 Windows 视频文件夹。",
+                "Saved as MP4 (H.264), defaulting to the Windows Videos folder.",
+            ),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 8),
@@ -706,13 +769,60 @@ class RecorderApp:
     # 时长、画质与设备选择
     # ------------------------------------------------------------------
     def _choose_duration(self, seconds: int) -> None:
-        self.duration_text.set(str(seconds))
+        self.duration_text.set("MAX" if seconds == MAX_DURATION_SENTINEL else str(seconds))
+
+    def _duration_from_input(self) -> int:
+        text = self.duration_text.get().strip()
+        if text.upper() == "MAX":
+            return MAX_DURATION_SENTINEL
+        return parse_duration(text)
+
+    def _is_max_duration(self) -> bool:
+        return self._duration_seconds == MAX_DURATION_SENTINEL
+
+    def _on_language_selected(self, _event: object = None) -> None:
+        if self._state != _IDLE:
+            self.language_var.set(language_name(self._language))
+            return
+        selected = self.language_var.get()
+        code = next(
+            (value for value, label in LANGUAGES if label == selected),
+            self._language,
+        )
+        if code == self._language:
+            return
+        system_id = self._selected_device_id(
+            self._system_device_map, self.system_device_var.get()
+        )
+        microphone_id = self._selected_device_id(
+            self._microphone_device_map, self.microphone_device_var.get()
+        )
+        try:
+            duration = self._duration_from_input()
+        except ValueError:
+            duration = self._duration_seconds
+        self._language = set_language(code)
+        self.language_var.set(language_name(self._language))
+        self._duration_seconds = duration
+        self._build_ui()
+        # A freshly created Spinbox clamps its textvariable, so restore MAX or
+        # the custom duration after the rebuilt widgets exist.
+        self._choose_duration(duration)
+        self._fit_and_center_window()
+        self._refresh_audio_devices(system_id, microphone_id)
+        self._fit_and_center_window()
+        self._set_status(self._idle_status(), _MUTED)
+        self._save_settings()
 
     def _on_duration_text_changed(self, *_args: object) -> None:
-        try:
-            seconds = parse_duration(self.duration_text.get())
-        except ValueError:
-            seconds = None
+        raw = self.duration_text.get().strip()
+        if raw.upper() == "MAX":
+            seconds = MAX_DURATION_SENTINEL
+        else:
+            try:
+                seconds = parse_duration(raw)
+            except ValueError:
+                seconds = None
         for value, button in self._duration_buttons.items():
             if value == seconds:
                 button.configure(
@@ -764,20 +874,34 @@ class RecorderApp:
             self._audio_note.configure(text=device_error_text(devices.error), fg=_WARN)
         elif not devices.system and not devices.microphones:
             self._audio_note.configure(
-                text="未检测到可用的音频设备；仍可录制无声视频。", fg=_WARN
+                text=tr(
+                    "未检测到可用的音频设备；仍可录制无声视频。",
+                    "No audio devices found; you can still record a silent video.",
+                ),
+                fg=_WARN,
             )
         elif not devices.system:
             self._audio_note.configure(
-                text="未检测到系统声音输出设备；可录制麦克风或无声视频。",
+                text=tr(
+                    "未检测到系统声音输出设备；可录制麦克风或无声视频。",
+                    "No system audio output found; record a microphone or silent video.",
+                ),
                 fg=_WARN,
             )
         elif not devices.microphones:
             self._audio_note.configure(
-                text="未检测到麦克风；系统声音仍可正常录制。", fg=_MUTED
+                text=tr(
+                    "未检测到麦克风；系统声音仍可正常录制。",
+                    "No microphone found; system audio can still be recorded.",
+                ),
+                fg=_MUTED,
             )
         else:
             self._audio_note.configure(
-                text="系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
+                text=tr(
+                "系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
+                "System audio is captured via speaker loopback and mixed into one AAC track.",
+            ),
                 fg=_MUTED,
             )
         if not devices.error:
@@ -872,7 +996,7 @@ class RecorderApp:
 
     def _clear_status(self) -> None:
         if self._state == _IDLE:
-            self._set_status(_IDLE_STATUS, _MUTED)
+            self._set_status(self._idle_status(), _MUTED)
 
     def _browse_output(self) -> None:
         initial = Path(self.output_var.get()).expanduser()
@@ -883,26 +1007,35 @@ class RecorderApp:
         try:
             directory = ensure_output_dir(selected)
         except OutputDirectoryError as exc:
-            self._set_status("所选文件夹不可写。", _WARN)
-            messagebox.showerror("文件夹不可写", str(exc), parent=self.root)
+            self._set_status(tr("所选文件夹不可写。", "The selected folder is not writable."), _WARN)
+            messagebox.showerror(
+                tr("文件夹不可写", "Folder not writable"), str(exc), parent=self.root
+            )
             return
         self.output_var.set(str(directory))
-        self._set_status(f"保存位置已更新：{directory}", _INFO)
+        self._set_status(
+            tr("保存位置已更新：{path}", "Save location updated: {path}", path=directory),
+            _INFO,
+        )
 
     def _open_output_folder(self) -> None:
         try:
             directory = ensure_output_dir(self.output_var.get())
             open_folder(directory)
         except (OutputDirectoryError, OSError) as exc:
-            self._set_status("无法打开保存文件夹。", _WARN)
-            messagebox.showerror("无法打开文件夹", str(exc), parent=self.root)
+            self._set_status(
+                tr("无法打开保存文件夹。", "Cannot open the save folder."), _WARN
+            )
+            messagebox.showerror(
+                tr("无法打开文件夹", "Cannot open folder"), str(exc), parent=self.root
+            )
 
     def _start_flow(self) -> None:
         if self._state != _IDLE:
             return
         try:
             directory = ensure_output_dir(self.output_var.get())
-            duration = parse_duration(self.duration_text.get())
+            duration = self._duration_from_input()
             fps = parse_fps(self.fps_var.get())
             bitrate_mbps = parse_video_bitrate_mbps(self.video_bitrate_var.get())
             audio_bitrate = parse_audio_bitrate_kbps(
@@ -911,25 +1044,47 @@ class RecorderApp:
             find_ffmpeg()
         except (OutputDirectoryError, ValueError, FFmpegError) as exc:
             self._set_status(str(exc), _WARN)
-            messagebox.showerror("设置无效", str(exc), parent=self.root)
+            messagebox.showerror(
+                tr("设置无效", "Invalid settings"), str(exc), parent=self.root
+            )
             return
 
         audio_selection = self._audio_selection_from_ui()
         if self.system_audio_var.get() and not audio_selection.system_enabled:
-            self._set_status("系统声音已开启但没有可用设备。", _WARN)
+            self._set_status(
+                tr(
+                    "系统声音已开启但没有可用设备。",
+                    "System audio is enabled but no device is available.",
+                ),
+                _WARN,
+            )
             messagebox.showerror(
-                "音频设备不可用",
-                "系统声音已开启，但没有选择可用设备。\n"
-                "请刷新设备、选择设备，或关闭系统声音。",
+                tr("音频设备不可用", "Audio device unavailable"),
+                tr(
+                    "系统声音已开启，但没有选择可用设备。\n"
+                    "请刷新设备、选择设备，或关闭系统声音。",
+                    "System audio is enabled but no device is selected.\n"
+                    "Refresh devices, pick a device, or turn system audio off.",
+                ),
                 parent=self.root,
             )
             return
         if self.microphone_var.get() and not audio_selection.microphone_enabled:
-            self._set_status("麦克风已开启但没有可用设备。", _WARN)
+            self._set_status(
+                tr(
+                    "麦克风已开启但没有可用设备。",
+                    "The microphone is enabled but no device is available.",
+                ),
+                _WARN,
+            )
             messagebox.showerror(
-                "音频设备不可用",
-                "麦克风已开启，但没有选择可用设备。\n"
-                "请刷新设备、选择设备，或关闭麦克风。",
+                tr("音频设备不可用", "Audio device unavailable"),
+                tr(
+                    "麦克风已开启，但没有选择可用设备。\n"
+                    "请刷新设备、选择设备，或关闭麦克风。",
+                    "The microphone is enabled but no device is selected.\n"
+                    "Refresh devices, pick a device, or turn the microphone off.",
+                ),
                 parent=self.root,
             )
             return
@@ -945,7 +1100,13 @@ class RecorderApp:
         self.output_var.set(str(directory))
         self._save_settings(directory)
         self._state = _SELECTING
-        self._set_status("请在全屏遮罩上拖动鼠标，框选录制区域。", _INFO)
+        self._set_status(
+            tr(
+                "请在全屏遮罩上拖动鼠标，框选录制区域。",
+                "Drag on the full-screen overlay to select the recording area.",
+            ),
+            _INFO,
+        )
         self.root.withdraw()
         self.root.after(80, self._open_selector)
 
@@ -963,8 +1124,19 @@ class RecorderApp:
             self._selector = None
             self._state = _IDLE
             self._restore_main()
-            self._set_status("无法打开框选界面，请重试。", _WARN)
-            messagebox.showerror("无法框选", f"打开框选界面失败：\n{exc}", parent=self.root)
+            self._set_status(
+                tr("无法打开框选界面，请重试。", "Cannot open the region selector. Try again."),
+                _WARN,
+            )
+            messagebox.showerror(
+                tr("无法框选", "Cannot select a region"),
+                tr(
+                    "打开框选界面失败：\n{error}",
+                    "Cannot open the region selector:\n{error}",
+                    error=exc,
+                ),
+                parent=self.root,
+            )
 
     def _on_region_selected(self, region: CaptureRegion) -> None:
         self._selector = None
@@ -980,7 +1152,10 @@ class RecorderApp:
             return
         self._state = _IDLE
         self._restore_main()
-        self._set_status("已取消框选，未开始录制。", _MUTED)
+        self._set_status(
+            tr("已取消框选，未开始录制。", "Selection cancelled. Recording did not start."),
+            _MUTED,
+        )
 
     # ------------------------------------------------------------------
     # 录制流程
@@ -996,7 +1171,7 @@ class RecorderApp:
         try:
             countdown = CountdownOverlay(
                 self.root,
-                self._duration_seconds,
+                None if self._is_max_duration() else self._duration_seconds,
                 on_stop=self._stop_recording_from_overlay,
             )
             countdown.show()
@@ -1006,7 +1181,7 @@ class RecorderApp:
             if countdown is not None:
                 countdown.close()
             self._countdown = None
-            self._abort_start("无法创建录制倒计时浮层。")
+            self._abort_start(tr("无法创建录制倒计时浮层。", "Cannot create the countdown overlay."))
             return
 
         if not self._start_tray("recording"):
@@ -1016,7 +1191,10 @@ class RecorderApp:
         self._state = _RECORDING
         self._recording_started_at = 0.0
         if self._countdown is not None:
-            self._countdown.set_remaining(self._duration_seconds)
+            if self._is_max_duration():
+                self._countdown.set_elapsed(0)
+            else:
+                self._countdown.set_remaining(self._duration_seconds)
         worker = threading.Thread(
             target=self._record_worker,
             args=(region, output_path),
@@ -1029,7 +1207,7 @@ class RecorderApp:
         except RuntimeError:
             LOGGER.exception("启动录制线程失败")
             self._worker = None
-            self._abort_start("无法启动录制线程，请重试。")
+            self._abort_start(tr("无法启动录制线程，请重试。", "Cannot start the recording thread. Try again."))
             return
 
     def _record_worker(self, region: CaptureRegion, output_path: Path) -> None:
@@ -1037,7 +1215,7 @@ class RecorderApp:
             result = record_session(
                 region,
                 output_path,
-                self._duration_seconds,
+                None if self._is_max_duration() else self._duration_seconds,
                 self._video_settings,
                 self._audio_selection,
                 self._audio_bitrate_kbps,
@@ -1053,16 +1231,33 @@ class RecorderApp:
         else:
             self._events.put(("done", result))
 
+    def _recording_menu(self) -> tuple[TrayMenuItem | None, ...]:
+        return (
+            (tr("停止并保存", "Stop and save"), "stop"),
+            (tr("取消录制", "Cancel recording"), "cancel"),
+            None,
+            (tr("退出程序（放弃录制）", "Exit (discard recording)"), "exit"),
+        )
+
+    def _idle_menu(self) -> tuple[TrayMenuItem | None, ...]:
+        return (
+            (tr("显示主界面", "Show QuickRec"), "show"),
+            None,
+            (tr("退出程序", "Exit"), "exit"),
+        )
+
     def _start_tray(self, mode: str) -> bool:
         if self._tray is not None:
             if self._tray_mode == mode:
                 return True
             self._stop_tray()
-        items = _RECORDING_MENU if mode == "recording" else _IDLE_MENU
+        items = (
+            self._recording_menu() if mode == "recording" else self._idle_menu()
+        )
         tooltip = (
-            "屏幕录制中 · 右键停止或取消"
+            tr("QuickRec 录制中 · 右键停止或取消", "QuickRec recording · right-click to stop")
             if mode == "recording"
-            else "屏幕录制工具 · 右键显示或退出"
+            else tr("QuickRec · 右键显示或退出", "QuickRec · right-click to show or exit")
         )
         tray = TrayIcon(tooltip, ICON_ICO, self._on_tray_command, items)
         try:
@@ -1120,7 +1315,10 @@ class RecorderApp:
             and self._recording_started_at > 0
         ):
             elapsed = time.perf_counter() - self._recording_started_at
-            self._countdown.set_remaining(self._duration_seconds - elapsed)
+            if self._is_max_duration():
+                self._countdown.set_elapsed(elapsed)
+            else:
+                self._countdown.set_remaining(self._duration_seconds - elapsed)
         try:
             self._poll_job = self.root.after(100, self._poll_events)
         except tk.TclError:
@@ -1164,7 +1362,9 @@ class RecorderApp:
             return
         self._stop_tray()
         self._restore_main()
-        self._set_status("已从系统托盘恢复。", _MUTED)
+        self._set_status(
+            tr("已从系统托盘恢复。", "Restored from the system tray."), _MUTED
+        )
 
     def _stop_recording_from_overlay(self) -> None:
         if self._state != _RECORDING or self._stop_event is None:
@@ -1210,7 +1410,7 @@ class RecorderApp:
 
     def _handle_recording_done(self, payload: object) -> None:
         if not isinstance(payload, RecordingResult):
-            self._handle_recording_error(RuntimeError("录制结果无效。"))
+            self._handle_recording_error(RuntimeError(tr("录制结果无效。", "Invalid recording result.")))
             return
         cancelled = self._cancel_requested
         exit_after = self._exit_when_done
@@ -1225,12 +1425,18 @@ class RecorderApp:
                 return
             self._restore_main()
             self._state = _IDLE
-            self._set_status("已取消录制，视频未保存。", _MUTED)
+            self._set_status(
+                tr("已取消录制，视频未保存。", "Recording cancelled. No video was saved."),
+                _MUTED,
+            )
             return
 
         self._restore_main()
         self._state = _IDLE
-        self._set_status(f"录制完成：{payload.path.name}", _SUCCESS)
+        self._set_status(
+            tr("录制完成：{name}", "Recording complete: {name}", name=payload.path.name),
+            _SUCCESS,
+        )
         self._show_completion_dialog(payload)
 
     def _handle_recording_error(self, payload: object) -> None:
@@ -1245,14 +1451,31 @@ class RecorderApp:
         self._restore_main()
         self._state = _IDLE
         if cancelled:
-            self._set_status("已取消录制，视频未保存。", _MUTED)
+            self._set_status(
+                tr("已取消录制，视频未保存。", "Recording cancelled. No video was saved."),
+                _MUTED,
+            )
             return
-        if stop_requested and "没有采集到任何画面" in str(error):
-            self._set_status("录制时间太短，未生成视频。", _MUTED)
+        if stop_requested and isinstance(error, NoFramesError):
+            self._set_status(
+                tr(
+                    "录制时间太短，未生成视频。",
+                    "Recording was too short. No video was created.",
+                ),
+                _MUTED,
+            )
             return
         LOGGER.error("录制失败：%s", error)
-        self._set_status("录制失败，请检查设置后重试。", _WARN)
-        messagebox.showerror("录制失败", str(error), parent=self.root)
+        self._set_status(
+            tr(
+                "录制失败，请检查设置后重试。",
+                "Recording failed. Check the settings and try again.",
+            ),
+            _WARN,
+        )
+        messagebox.showerror(
+            tr("录制失败", "Recording failed"), str(error), parent=self.root
+        )
 
     def _finish_recording_ui(self) -> None:
         if self._countdown is not None:
@@ -1269,37 +1492,68 @@ class RecorderApp:
         try:
             size_text = format_bytes(result.path.stat().st_size)
         except OSError:
-            size_text = "未知"
-        duration_text = f"{result.duration_seconds:.0f} 秒"
-        stop_note = "\n已按请求提前停止。" if result.stopped_early else ""
+            size_text = tr("未知", "Unknown")
+        duration_text = tr(
+            "{seconds:.0f} 秒", "{seconds:.0f} s", seconds=result.duration_seconds
+        )
+        stop_note = (
+            tr("\n已按请求提前停止。", "\nStopped early as requested.")
+            if result.stopped_early
+            else ""
+        )
         audio_note = self._completion_audio_note(result)
-        message = (
+        message = tr(
             "录制完成\n\n"
-            f"文件：{result.path.name}\n"
-            f"时长：{duration_text}\n"
-            f"大小：{size_text}\n"
-            f"画质：{result.fps} FPS · {self._video_settings.bitrate_mbps:g} Mbps\n"
-            f"位置：{result.path.parent}{stop_note}{audio_note}\n\n"
-            "是否打开所在文件夹？"
+            "文件：{name}\n"
+            "时长：{duration}\n"
+            "大小：{size}\n"
+            "画质：{fps} FPS · {bitrate:g} Mbps\n"
+            "位置：{parent}{stop}{audio}\n\n"
+            "是否打开所在文件夹？",
+            "Recording complete\n\n"
+            "File: {name}\n"
+            "Duration: {duration}\n"
+            "Size: {size}\n"
+            "Quality: {fps} FPS · {bitrate:g} Mbps\n"
+            "Location: {parent}{stop}{audio}\n\n"
+            "Open the folder now?",
+            name=result.path.name,
+            duration=duration_text,
+            size=size_text,
+            fps=result.fps,
+            bitrate=self._video_settings.bitrate_mbps,
+            parent=result.path.parent,
+            stop=stop_note,
+            audio=audio_note,
         )
         LOGGER.info("录制完成：%s", result.path)
-        open_now = messagebox.askyesno("录制完成", message, parent=self.root)
+        open_now = messagebox.askyesno(
+            tr("录制完成", "Recording complete"), message, parent=self.root
+        )
         if open_now:
             try:
                 open_folder(result.path.parent)
             except OSError as exc:
-                messagebox.showerror("无法打开文件夹", str(exc), parent=self.root)
+                messagebox.showerror(
+                    tr("无法打开文件夹", "Cannot open folder"),
+                    str(exc),
+                    parent=self.root,
+                )
 
     def _completion_audio_note(self, result: RecordingResult) -> str:
         sources = []
         if self._audio_selection.system_enabled:
-            sources.append("系统声音")
+            sources.append(tr("系统声音", "System audio"))
         if self._audio_selection.microphone_enabled:
-            sources.append("麦克风")
-        note = "\n音频：" + (" + ".join(sources) if sources else "无")
+            sources.append(tr("麦克风", "Microphone"))
+        note = tr(
+            "\n音频：{sources}",
+            "\nAudio: {sources}",
+            sources=" + ".join(sources) if sources else tr("无", "none"),
+        )
         warning = format_audio_warning(result.audio_warnings)
         if warning:
-            note += f"\n注意：{warning}"
+            note += tr("\n注意：{warning}", "\nWarning: {warning}", warning=warning)
         return note
 
     def _abort_start(self, message: str) -> None:
@@ -1307,7 +1561,9 @@ class RecorderApp:
         self._restore_main()
         self._state = _IDLE
         self._set_status(message, _WARN)
-        messagebox.showerror("无法开始录制", message, parent=self.root)
+        messagebox.showerror(
+            tr("无法开始录制", "Cannot start recording"), message, parent=self.root
+        )
 
     def _restore_main(self) -> None:
         try:
@@ -1332,7 +1588,7 @@ class RecorderApp:
     # ------------------------------------------------------------------
     def _save_settings(self, directory: Path | None = None) -> None:
         try:
-            self._duration_seconds = parse_duration(self.duration_text.get())
+            self._duration_seconds = self._duration_from_input()
         except ValueError:
             pass
         try:
@@ -1369,14 +1625,18 @@ class RecorderApp:
                 system_audio_device=system_id or "",
                 microphone_device=microphone_id or "",
                 record_cursor=bool(self.record_cursor_var.get()),
+                language=self._language,
             )
         )
 
     def _on_close(self) -> None:
         if self._state == _RECORDING:
             should_exit = messagebox.askyesno(
-                "正在录制",
-                "当前正在录制，退出将取消本次录制。\n确定要退出吗？",
+                tr("正在录制", "Recording in progress"),
+                tr(
+                    "当前正在录制，退出将取消本次录制。\n确定要退出吗？",
+                    "Recording is in progress. Exiting will cancel it.\nExit anyway?",
+                ),
                 parent=self.root,
             )
             if not should_exit:
@@ -1425,8 +1685,12 @@ class RecorderApp:
         )
         try:
             messagebox.showerror(
-                "程序错误",
-                f"界面发生未处理错误：\n{exception}",
+                tr("程序错误", "Application error"),
+                tr(
+                    "界面发生未处理错误：\n{error}",
+                    "An unhandled UI error occurred:\n{error}",
+                    error=exception,
+                ),
                 parent=self.root,
             )
         except tk.TclError:
@@ -1435,11 +1699,13 @@ class RecorderApp:
 
 def device_error_text(error: str) -> str:
     if "soundcard" in error:
-        return (
+        return tr(
             "音频组件未安装：请执行 python -m pip install -e .，"
-            "或使用项目 .venv\\Scripts\\python run.py 启动。"
+            "或使用项目 .venv\\Scripts\\python run.py 启动。",
+            "Audio components are missing. Run python -m pip install -e ., "
+            "or start with .venv\\Scripts\\python run.py.",
         )
-    return f"音频设备不可用：{error}"
+    return tr("音频设备不可用：{error}", "Audio device unavailable: {error}", error=error)
 
 
 def _configure_logging() -> None:
@@ -1448,7 +1714,7 @@ def _configure_logging() -> None:
         handlers.append(logging.StreamHandler())
     try:
         base = os.environ.get("LOCALAPPDATA")
-        log_dir = (Path(base) if base else Path.home()) / "ShortVideoCapture"
+        log_dir = (Path(base) if base else Path.home()) / "QuickRec"
         log_dir.mkdir(parents=True, exist_ok=True)
         handlers.append(
             RotatingFileHandler(

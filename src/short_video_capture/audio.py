@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .i18n import tr
+
 LOGGER = logging.getLogger(__name__)
 SAMPLE_RATE = 48_000
 CHANNELS = 2
@@ -66,7 +68,7 @@ class AudioClip:
 
     @property
     def label(self) -> str:
-        return "系统声音" if self.kind == "system" else "麦克风"
+        return _source_name(self.kind)
 
 
 def list_audio_devices() -> AudioDevices:
@@ -78,22 +80,39 @@ def list_audio_devices() -> AudioDevices:
             (),
             None,
             None,
-            f"未安装 soundcard，无法录制音频：{AUDIO_IMPORT_ERROR}",
+            tr(
+                "未安装 soundcard，无法录制音频：{error}",
+                "soundcard is not installed, so audio cannot be recorded: {error}",
+                error=AUDIO_IMPORT_ERROR,
+            ),
         )
     try:
         system = tuple(
-            AudioDevice(id=str(speaker.id), name=speaker.name or "默认输出设备")
+            AudioDevice(id=str(speaker.id), name=speaker.name or tr("默认输出设备", "Default output"))
             for speaker in _soundcard.all_speakers()
         )
         microphones = tuple(
-            AudioDevice(id=str(microphone.id), name=microphone.name or "默认麦克风")
+            AudioDevice(
+                id=str(microphone.id),
+                name=microphone.name or tr("默认麦克风", "Default microphone"),
+            )
             for microphone in _soundcard.all_microphones(include_loopback=False)
         )
         default_speaker = _soundcard.default_speaker()
         default_microphone = _soundcard.default_microphone()
     except Exception as exc:  # soundcard 内部为 cffi/COM 异常
         LOGGER.warning("枚举音频设备失败：%s", exc)
-        return AudioDevices((), (), None, None, f"枚举音频设备失败：{exc}")
+        return AudioDevices(
+            (),
+            (),
+            None,
+            None,
+            tr(
+                "枚举音频设备失败：{error}",
+                "Cannot enumerate audio devices: {error}",
+                error=exc,
+            ),
+        )
     return AudioDevices(
         system=system,
         microphones=microphones,
@@ -157,7 +176,10 @@ class AudioRecorder:
             return
         if _soundcard is None:
             raise AudioRecordingError(
-                "未安装 soundcard，无法录制音频。请先执行 python -m pip install -e ."
+                tr(
+                    "未安装 soundcard，无法录制音频。请先执行 python -m pip install -e .",
+                    "soundcard is not installed. Run python -m pip install -e . first.",
+                )
             )
         specs: list[tuple[str, str | None, bool]] = []
         if self._selection.system_enabled:
@@ -168,7 +190,13 @@ class AudioRecorder:
             return
         for kind, device_id, _loopback in specs:
             if not device_id:
-                raise AudioRecordingError(f"没有选择{_source_name(kind)}设备。")
+                raise AudioRecordingError(
+                    tr(
+                        "没有选择{source}设备。",
+                        "No {source} device was selected.",
+                        source=_source_name(kind),
+                    )
+                )
 
         self._directory.mkdir(parents=True, exist_ok=True)
         self._pending = len(specs)
@@ -187,7 +215,12 @@ class AudioRecorder:
 
         if not self._ready.wait(timeout=6):
             self.stop()
-            raise AudioRecordingError("音频设备启动超时，请检查设备是否被其他程序占用。")
+            raise AudioRecordingError(
+                tr(
+                    "音频设备启动超时，请检查设备是否被其他程序占用。",
+                    "Audio device startup timed out. Check whether another app is using it.",
+                )
+            )
         with self._lock:
             errors = list(self._warnings)
         if errors:
@@ -224,9 +257,20 @@ class AudioRecorder:
         try:
             device = _soundcard.get_microphone(device_id, include_loopback=loopback)
             if device is None:
-                raise AudioRecordingError(f"找不到{_source_name(kind)}设备。")
+                raise AudioRecordingError(
+                    tr(
+                        "找不到{source}设备。",
+                        "Cannot find the {source} device.",
+                        source=_source_name(kind),
+                    )
+                )
             if loopback and not bool(getattr(device, "isloopback", True)):
-                raise AudioRecordingError("所选输出设备不支持系统声音环回。")
+                raise AudioRecordingError(
+                    tr(
+                        "所选输出设备不支持系统声音环回。",
+                        "The selected output device does not support loopback.",
+                    )
+                )
 
             with device.recorder(
                 samplerate=self._sample_rate,
@@ -253,7 +297,12 @@ class AudioRecorder:
                         frames_written += len(frames)
         except Exception as exc:
             if not self._stop.is_set():
-                message = f"{_source_name(kind)}录制失败：{exc}"
+                message = tr(
+                    "{source}录制失败：{error}",
+                    "{source} recording failed: {error}",
+                    source=_source_name(kind),
+                    error=exc,
+                )
                 LOGGER.warning(message)
                 with self._lock:
                     self._warnings.append(message)
@@ -281,7 +330,9 @@ class AudioRecorder:
         if frames.ndim == 1:
             frames = frames[:, np.newaxis]
         if frames.ndim != 2:
-            raise AudioRecordingError("音频数据格式异常。")
+            raise AudioRecordingError(
+                tr("音频数据格式异常。", "Unexpected audio data format.")
+            )
         if frames.shape[1] == 1:
             frames = np.repeat(frames, 2, axis=1)
         elif frames.shape[1] > 2:
@@ -290,4 +341,4 @@ class AudioRecorder:
 
 
 def _source_name(kind: str) -> str:
-    return "系统声音" if kind == "system" else "麦克风"
+    return tr("系统声音", "System audio") if kind == "system" else tr("麦克风", "Microphone")

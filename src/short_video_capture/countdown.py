@@ -7,6 +7,7 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import font as tkfont
 
+from .i18n import tr
 from .win32 import (
     exclude_from_capture,
     make_overlay_window,
@@ -25,11 +26,12 @@ class CountdownOverlay:
     def __init__(
         self,
         root: tk.Misc,
-        total_seconds: int,
+        total_seconds: int | None,
         on_stop: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._total_seconds = total_seconds
+        self._max_mode = total_seconds is None
         self._on_stop = on_stop
         self._blink_job: str | None = None
         self._dot_visible = True
@@ -67,7 +69,7 @@ class CountdownOverlay:
 
         tk.Label(
             content,
-            text="录制中",
+            text=tr("录制中", "REC"),
             bg=_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -76,16 +78,22 @@ class CountdownOverlay:
         self._timer_font = tkfont.Font(family="Consolas", size=17, weight="bold")
         self._timer = tk.Label(
             content,
-            text=self._format(total_seconds),
+            text=(
+                self._format_max(0)
+                if self._max_mode
+                else self._format(total_seconds)
+            ),
             bg=_BG,
             fg=_FG,
             font=self._timer_font,
+            width=12,
+            anchor="center",
         )
         self._timer.pack(side="left")
 
         self._stop_button = tk.Button(
             content,
-            text="停止",
+            text=tr("停止", "Stop"),
             command=self._request_stop,
             bg="#DC2626",
             fg="#FFFFFF",
@@ -129,14 +137,34 @@ class CountdownOverlay:
         except tk.TclError:
             self._closed = True
 
+    def set_elapsed(self, elapsed_seconds: float) -> None:
+        """MAX 模式显示已录制时长。"""
+        if self._closed:
+            return
+        try:
+            self._timer.configure(text=self._format_max(elapsed_seconds))
+        except tk.TclError:
+            self._closed = True
+
     @staticmethod
     def _format(remaining_seconds: float) -> str:
-        whole = max(0, math.ceil(remaining_seconds))
+        return CountdownOverlay._clock(math.ceil(remaining_seconds))
+
+    @staticmethod
+    def _format_elapsed(elapsed_seconds: float) -> str:
+        return CountdownOverlay._clock(int(max(0.0, elapsed_seconds)))
+
+    @staticmethod
+    def _clock(whole_seconds: int) -> str:
+        whole = max(0, whole_seconds)
         hours, remainder = divmod(whole, 3600)
         minutes, seconds = divmod(remainder, 60)
         if hours:
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
+
+    def _format_max(self, elapsed_seconds: float) -> str:
+        return f"MAX {self._format_elapsed(elapsed_seconds)}"
 
     def _schedule_blink(self) -> None:
         if self._closed:
@@ -169,7 +197,7 @@ class CountdownOverlay:
         self._stopping = True
         try:
             self._stop_button.configure(
-                text="保存中…",
+                text=tr("保存中…", "Saving…"),
                 state="disabled",
                 bg="#7F1D1D",
                 cursor="arrow",

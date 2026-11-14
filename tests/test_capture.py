@@ -225,6 +225,29 @@ class RecordVideoTests(unittest.TestCase):
         self.assertEqual(result.frame_count, 1)
         self.assertEqual(len(FakeSink.instances[-1].frames), 1)
 
+    def test_max_duration_runs_until_stop(self) -> None:
+        stop_event = threading.Event()
+
+        def source_factory(region: CaptureRegion) -> FakeSource:
+            return FakeSource(region, on_grab=stop_event.set)
+
+        output = self.directory / "max.mp4"
+        result = record_video(
+            CaptureRegion(0, 0, 64, 64),
+            output,
+            duration_seconds=None,
+            settings=VideoSettings(20, 4_000),
+            stop_event=stop_event,
+            source_factory=source_factory,
+            sink_factory=FakeSink,
+            include_cursor=False,
+        )
+
+        self.assertTrue(output.is_file())
+        self.assertTrue(result.stopped_early)
+        self.assertEqual(result.frame_count, 1)
+        self.assertEqual(len(FakeSink.instances[-1].frames), 1)
+
     def test_no_frames_raises_and_removes_partial_file(self) -> None:
         stop_event = threading.Event()
         stop_event.set()

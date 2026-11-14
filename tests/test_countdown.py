@@ -18,6 +18,8 @@ class CountdownFormatTests(unittest.TestCase):
         self.assertEqual(CountdownOverlay._format(61), "01:01")
         self.assertEqual(CountdownOverlay._format(3600), "01:00:00")
         self.assertEqual(CountdownOverlay._format(-1), "00:00")
+        self.assertEqual(CountdownOverlay._format_elapsed(61), "01:01")
+        self.assertEqual(CountdownOverlay._format_elapsed(-1), "00:00")
 
 
 if __name__ == "__main__":

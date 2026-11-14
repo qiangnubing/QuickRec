@@ -14,6 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .i18n import tr
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -30,7 +32,13 @@ def find_ffmpeg() -> Path:
         candidate = Path(override).expanduser()
         if candidate.is_file():
             return candidate
-        raise FFmpegError(f"指定的 FFmpeg 不存在：{candidate}")
+        raise FFmpegError(
+            tr(
+                "指定的 FFmpeg 不存在：{path}",
+                "The specified FFmpeg does not exist: {path}",
+                path=candidate,
+            )
+        )
 
     try:
         import imageio_ffmpeg
@@ -46,8 +54,12 @@ def find_ffmpeg() -> Path:
         return Path(on_path)
 
     raise FFmpegError(
-        "未找到 FFmpeg。请安装 imageio-ffmpeg（python -m pip install imageio-ffmpeg），"
-        "或把 ffmpeg.exe 加入 PATH。"
+        tr(
+            "未找到 FFmpeg。请安装 imageio-ffmpeg"
+            "（python -m pip install imageio-ffmpeg），或把 ffmpeg.exe 加入 PATH。",
+            "FFmpeg was not found. Install imageio-ffmpeg "
+            "(python -m pip install imageio-ffmpeg), or add ffmpeg.exe to PATH.",
+        )
     )
 
 
@@ -129,7 +141,13 @@ class FFmpegVideoSink:
                 creationflags=creation_flags(),
             )
         except OSError as exc:
-            raise FFmpegError(f"无法启动视频编码进程：{exc}") from exc
+            raise FFmpegError(
+                tr(
+                    "无法启动视频编码进程：{error}",
+                    "Cannot start the video encoder: {error}",
+                    error=exc,
+                )
+            ) from exc
         self._reader = threading.Thread(
             target=self._read_stderr, name="ffmpeg-stderr", daemon=True
         )
@@ -151,17 +169,36 @@ class FFmpegVideoSink:
     def write(self, frame: np.ndarray) -> None:
         if frame.shape != (self._height, self._width, 4):
             raise FFmpegError(
-                f"视频帧尺寸异常：需要 {self._width}×{self._height} BGRA，实际为 {frame.shape}"
+                tr(
+                    "视频帧尺寸异常：需要 {width}×{height} BGRA，实际为 {shape}",
+                    "Unexpected frame size: expected {width}×{height} BGRA, got {shape}",
+                    width=self._width,
+                    height=self._height,
+                    shape=frame.shape,
+                )
             )
         if self._closed:
-            raise FFmpegError("视频编码器已经关闭。")
+            raise FFmpegError(
+                tr("视频编码器已经关闭。", "The video encoder is already closed.")
+            )
         stream = self._process.stdin
         if stream is None:
-            raise FFmpegError(self._diagnostic("视频编码器管道不可用。"))
+            raise FFmpegError(
+                self._diagnostic(
+                    tr("视频编码器管道不可用。", "The video encoder pipe is unavailable.")
+                )
+            )
         try:
             stream.write(frame.tobytes())
         except (BrokenPipeError, OSError) as exc:
-            raise FFmpegError(self._diagnostic("视频编码进程意外退出。")) from exc
+            raise FFmpegError(
+                self._diagnostic(
+                    tr(
+                        "视频编码进程意外退出。",
+                        "The video encoder exited unexpectedly.",
+                    )
+                )
+            ) from exc
 
     def close(self) -> None:
         if self._closed:
@@ -178,11 +215,20 @@ class FFmpegVideoSink:
         except subprocess.TimeoutExpired as exc:
             self._process.kill()
             self._process.wait(timeout=10)
-            raise FFmpegError("视频编码超时，文件可能不完整。") from exc
+            raise FFmpegError(
+                tr(
+                    "视频编码超时，文件可能不完整。",
+                    "Video encoding timed out; the file may be incomplete.",
+                )
+            ) from exc
         finally:
             self._reader.join(timeout=2)
         if return_code != 0:
-            raise FFmpegError(self._diagnostic("视频编码失败。"))
+            raise FFmpegError(
+                self._diagnostic(
+                    tr("视频编码失败。", "Video encoding failed.")
+                )
+            )
 
     def abort(self) -> None:
         if self._closed:
@@ -222,9 +268,24 @@ def run_ffmpeg(args: Sequence[str], timeout: float = 300) -> None:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise FFmpegError(f"FFmpeg 处理超时（{timeout:g} 秒）。") from exc
+        raise FFmpegError(
+            tr(
+                "FFmpeg 处理超时（{seconds:g} 秒）。",
+                "FFmpeg timed out after {seconds:g} seconds.",
+                seconds=timeout,
+            )
+        ) from exc
     except OSError as exc:
-        raise FFmpegError(f"无法启动 FFmpeg：{exc}") from exc
+        raise FFmpegError(
+            tr("无法启动 FFmpeg：{error}", "Cannot start FFmpeg: {error}", error=exc)
+        ) from exc
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
-        raise FFmpegError(f"FFmpeg 处理失败（退出码 {completed.returncode}）：\n{detail}")
+        raise FFmpegError(
+            tr(
+                "FFmpeg 处理失败（退出码 {code}）：\n{detail}",
+                "FFmpeg failed (exit code {code}):\n{detail}",
+                code=completed.returncode,
+                detail=detail,
+            )
+        )

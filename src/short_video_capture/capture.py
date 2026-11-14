@@ -15,6 +15,7 @@ import mss
 import numpy as np
 
 from .cursor import CursorRenderer
+from .i18n import tr
 from .media import FFmpegVideoSink
 
 LOGGER = logging.getLogger(__name__)
@@ -31,6 +32,10 @@ class RecordingError(RuntimeError):
     """录制过程失败。"""
 
 
+class NoFramesError(RecordingError):
+    """停止时还没有采集到第一帧。"""
+
+
 @dataclass(frozen=True, slots=True)
 class VideoSettings:
     fps: int = DEFAULT_FPS
@@ -38,10 +43,22 @@ class VideoSettings:
 
     def __post_init__(self) -> None:
         if not MIN_FPS <= self.fps <= MAX_FPS:
-            raise ValueError(f"帧率必须在 {MIN_FPS} 到 {MAX_FPS} 之间。")
+            raise ValueError(
+                tr(
+                    "帧率必须在 {low} 到 {high} 之间。",
+                    "Frame rate must be between {low} and {high}.",
+                    low=MIN_FPS,
+                    high=MAX_FPS,
+                )
+            )
         if not MIN_BITRATE_KBPS <= self.bitrate_kbps <= MAX_BITRATE_KBPS:
             raise ValueError(
-                f"视频码率必须在 {MIN_BITRATE_KBPS} 到 {MAX_BITRATE_KBPS} kbps 之间。"
+                tr(
+                    "视频码率必须在 {low} 到 {high} kbps 之间。",
+                    "Video bitrate must be between {low} and {high} kbps.",
+                    low=MIN_BITRATE_KBPS,
+                    high=MAX_BITRATE_KBPS,
+                )
             )
 
     @property
@@ -70,7 +87,13 @@ class CaptureRegion:
 
     def __post_init__(self) -> None:
         if self.width < MIN_REGION_SIZE or self.height < MIN_REGION_SIZE:
-            raise ValueError(f"录制区域至少需要 {MIN_REGION_SIZE}×{MIN_REGION_SIZE} 像素。")
+            raise ValueError(
+                tr(
+                    "录制区域至少需要 {size}×{size} 像素。",
+                    "Recording area must be at least {size}×{size} pixels.",
+                    size=MIN_REGION_SIZE,
+                )
+            )
 
     @property
     def right(self) -> int:
@@ -86,7 +109,12 @@ class CaptureRegion:
         width = self.width - self.width % 2
         height = self.height - self.height % 2
         if width < MIN_REGION_SIZE or height < MIN_REGION_SIZE:
-            raise ValueError("录制区域太小，无法编码视频。")
+            raise ValueError(
+                tr(
+                    "录制区域太小，无法编码视频。",
+                    "Recording area is too small to encode.",
+                )
+            )
         return CaptureRegion(self.left, self.top, width, height)
 
     def as_monitor(self) -> dict[str, int]:
@@ -143,7 +171,7 @@ def _open_ffmpeg_sink(
 def record_video(
     region: CaptureRegion,
     output_path: Path,
-    duration_seconds: float,
+    duration_seconds: float | None,
     settings: VideoSettings,
     *,
     stop_event: threading.Event | None = None,
@@ -154,20 +182,42 @@ def record_video(
 ) -> VideoCaptureResult:
     """录制指定区域，阻塞直到录制完成或 ``stop_event`` 被设置。"""
 
-    if not 0 < duration_seconds <= 86400:
-        raise ValueError("录制时长必须在 0 到 86400 秒之间。")
+    if duration_seconds is not None and not 0 < duration_seconds <= 86400:
+        raise ValueError(
+            tr(
+                "录制时长必须在 1 到 86400 秒之间，或为 MAX。",
+                "Duration must be between 1 and 86400 seconds, or MAX.",
+            )
+        )
     output_path = Path(output_path)
     if output_path.exists():
-        raise RecordingError(f"目标视频文件已存在：{output_path}")
+        raise RecordingError(
+            tr(
+                "目标视频文件已存在：{path}",
+                "The target video already exists: {path}",
+                path=output_path,
+            )
+        )
     region = region.even_sized()
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise RecordingError(f"无法创建视频保存目录：{output_path.parent}\n{exc}") from exc
+        raise RecordingError(
+            tr(
+                "无法创建视频保存目录：{path}\n{error}",
+                "Cannot create the video folder: {path}\n{error}",
+                path=output_path.parent,
+                error=exc,
+            )
+        ) from exc
 
     source_factory = source_factory or _MssSource
     sink_factory = sink_factory or _open_ffmpeg_sink
-    total_frames = max(1, math.ceil(duration_seconds * settings.fps))
+    total_frames = (
+        None
+        if duration_seconds is None
+        else max(1, math.ceil(duration_seconds * settings.fps))
+    )
     frame_period = 1.0 / settings.fps
 
     source: ScreenSource | None = None
@@ -192,7 +242,13 @@ def record_video(
             try:
                 cursor_renderer = CursorRenderer()
             except Exception as exc:
-                raise RecordingError(f"无法初始化鼠标指针绘制：{exc}") from exc
+                raise RecordingError(
+                    tr(
+                        "无法初始化鼠标指针绘制：{error}",
+                        "Cannot initialize cursor drawing: {error}",
+                        error=exc,
+                    )
+                ) from exc
 
         def emit(frame: np.ndarray) -> None:
             nonlocal cursor_renderer
@@ -212,18 +268,22 @@ def record_video(
         if on_start is not None:
             on_start()
         started_at = time.perf_counter()
-        deadline = started_at + duration_seconds
+        deadline = (
+            None if duration_seconds is None else started_at + duration_seconds
+        )
         last_grab_at = started_at
-        while frame_count < total_frames:
+        while total_frames is None or frame_count < total_frames:
             target = started_at + frame_count * frame_period
-            if target >= deadline:
+            if deadline is not None and target >= deadline:
                 break
             now = time.perf_counter()
             if stop_event is not None and stop_event.is_set():
                 stopped_early = True
                 break
             if now < target:
-                wait_seconds = min(target - now, deadline - now)
+                wait_seconds = target - now
+                if deadline is not None:
+                    wait_seconds = min(wait_seconds, deadline - now)
                 if stop_event is not None:
                     if stop_event.wait(wait_seconds):
                         stopped_early = True
@@ -243,13 +303,23 @@ def record_video(
                 last_grab_at = time.perf_counter()
                 grabbed = source.grab()
                 if grabbed is None or grabbed.ndim != 3 or grabbed.shape[2] != 4:
-                    raise RecordingError("采集到的画面格式异常（需要 BGRA）。")
+                    raise RecordingError(
+                        tr(
+                            "采集到的画面格式异常（需要 BGRA）。",
+                            "Captured frame format is invalid (BGRA required).",
+                        )
+                    )
                 background = np.ascontiguousarray(grabbed)
 
             emit(background)
             frame_count += 1
 
-        if not stopped_early and background is not None and frame_count < total_frames:
+        if (
+            not stopped_early
+            and total_frames is not None
+            and background is not None
+            and frame_count < total_frames
+        ):
             for _ in range(total_frames - frame_count):
                 emit(background)
                 frame_count += 1
@@ -282,20 +352,36 @@ def record_video(
             raise capture_error
         if isinstance(capture_error, RecordingError):
             raise capture_error
-        raise RecordingError(f"录制失败：{capture_error}") from capture_error
+        raise RecordingError(
+            tr("录制失败：{error}", "Recording failed: {error}", error=capture_error)
+        ) from capture_error
     if close_error is not None:
         _remove_partial_file(output_path)
-        raise RecordingError(f"保存视频失败：{close_error}") from close_error
+        raise RecordingError(
+            tr("保存视频失败：{error}", "Cannot save the video: {error}", error=close_error)
+        ) from close_error
 
     if frame_count == 0 or background is None:
         _remove_partial_file(output_path)
-        raise RecordingError("没有采集到任何画面，请重新选择录制区域。")
+        raise NoFramesError(
+            tr(
+                "没有采集到任何画面，请重新选择录制区域。",
+                "No frames were captured. Select the recording area again.",
+            )
+        )
 
     if not output_path.is_file() or output_path.stat().st_size == 0:
         _remove_partial_file(output_path)
-        raise RecordingError("视频文件未生成或内容为空。")
+        raise RecordingError(
+            tr(
+                "视频文件未生成或内容为空。",
+                "The video file was not created or is empty.",
+            )
+        )
 
-    elapsed = min(time.perf_counter() - started_at, duration_seconds)
+    elapsed = time.perf_counter() - started_at
+    if duration_seconds is not None:
+        elapsed = min(elapsed, duration_seconds)
     LOGGER.info(
         "视频录制完成：%s，%d 帧，%.1f 秒，%d FPS，%d kbps%s",
         output_path,

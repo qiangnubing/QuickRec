@@ -13,6 +13,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import simpledialog, ttk
 
+from .i18n import tr
+
 _BG = "#F1F5F9"
 _CARD = "#FFFFFF"
 _BORDER = "#E2E8F0"
@@ -59,7 +61,7 @@ class DirectoryPicker:
 
         self.window = tk.Toplevel(parent)
         self.window.withdraw()
-        self.window.title("选择保存文件夹")
+        self.window.title(tr("选择保存文件夹", "Select a save folder"))
         self.window.transient(parent)
         self.window.configure(bg=_BG)
         self.window.resizable(False, False)
@@ -71,7 +73,7 @@ class DirectoryPicker:
         header.pack(fill="x")
         tk.Label(
             header,
-            text="选择保存文件夹",
+            text=tr("选择保存文件夹", "Select a save folder"),
             bg="#0F172A",
             fg="#F8FAFC",
             font=("Microsoft YaHei UI", 14, "bold"),
@@ -97,10 +99,14 @@ class DirectoryPicker:
         )
         self.path_entry.pack(side="left", fill="x", expand=True, ipady=7)
         self.path_entry.bind("<Return>", lambda _event: self._go_to_entry())
-        self._button(path_row, "转到", self._go_to_entry, _CARD, _INFO).pack(
+        self._button(
+            path_row, tr("转到", "Go"), self._go_to_entry, _CARD, _INFO
+        ).pack(
             side="left", padx=(8, 0)
         )
-        self._button(path_row, "上一级", self._go_parent, _CARD, _TEXT).pack(
+        self._button(
+            path_row, tr("上一级", "Up"), self._go_parent, _CARD, _TEXT
+        ).pack(
             side="left", padx=(6, 0)
         )
 
@@ -108,7 +114,7 @@ class DirectoryPicker:
         drive_row.pack(fill="x", pady=(10, 8))
         tk.Label(
             drive_row,
-            text="驱动器",
+            text=tr("驱动器", "Drives"),
             bg=_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -124,7 +130,7 @@ class DirectoryPicker:
         )
         drive_box.pack(side="left")
         drive_box.bind("<<ComboboxSelected>>", self._on_drive_selected)
-        self._button(drive_row, "刷新", self._refresh, _BG, _INFO).pack(
+        self._button(drive_row, tr("刷新", "Refresh"), self._refresh, _BG, _INFO).pack(
             side="left", padx=(10, 0)
         )
 
@@ -169,14 +175,22 @@ class DirectoryPicker:
 
         actions = tk.Frame(self.window, bg=_BG)
         actions.pack(fill="x", padx=18, pady=(0, 14))
-        self._button(actions, "新建文件夹", self._create_folder, "#E2E8F0", _TEXT).pack(
+        self._button(
+            actions, tr("新建文件夹", "New folder"), self._create_folder, "#E2E8F0", _TEXT
+        ).pack(
             side="left"
         )
-        self._button(actions, "取消", self._cancel, "#E2E8F0", _TEXT).pack(
+        self._button(
+            actions, tr("取消", "Cancel"), self._cancel, "#E2E8F0", _TEXT
+        ).pack(
             side="right"
         )
         self._button(
-            actions, "选择此文件夹", self._select_current, _ACCENT, "#FFFFFF"
+            actions,
+            tr("选择此文件夹", "Select this folder"),
+            self._select_current,
+            _ACCENT,
+            "#FFFFFF",
         ).pack(side="right", padx=(0, 8))
 
         self._navigate(self._current)
@@ -255,10 +269,14 @@ class DirectoryPicker:
             target = path.expanduser().resolve()
             children = list_subdirectories(target)
         except OSError as exc:
-            self.error_var.set(f"无法打开文件夹：{exc}")
+            self.error_var.set(
+                tr("无法打开文件夹：{error}", "Cannot open folder: {error}", error=exc)
+            )
             return
         if not target.is_dir():
-            self.error_var.set(f"不是文件夹：{target}")
+            self.error_var.set(
+                tr("不是文件夹：{path}", "Not a folder: {path}", path=target)
+            )
             return
         self.error_var.set("")
         self._current = target
@@ -298,19 +316,23 @@ class DirectoryPicker:
 
     def _create_folder(self) -> None:
         name = simpledialog.askstring(
-            "新建文件夹", "文件夹名称：", parent=self.window
+            tr("新建文件夹", "New folder"),
+            tr("文件夹名称：", "Folder name:"),
+            parent=self.window,
         )
         if not name:
             return
         name = name.strip()
         if not name or name in (".", "..") or any(char in name for char in '\\/:*?"<>|'):
-            self.error_var.set("文件夹名称无效。")
+            self.error_var.set(tr("文件夹名称无效。", "Invalid folder name."))
             return
         target = self._current / name
         try:
             target.mkdir()
         except OSError as exc:
-            self.error_var.set(f"创建文件夹失败：{exc}")
+            self.error_var.set(
+                tr("创建文件夹失败：{error}", "Cannot create folder: {error}", error=exc)
+            )
             return
         self._navigate(target)
 

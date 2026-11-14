@@ -10,6 +10,8 @@ import threading
 from collections.abc import Callable, Sequence
 from ctypes import wintypes
 from pathlib import Path
+
+from .i18n import tr
 from typing import Literal
 
 LOGGER = logging.getLogger(__name__)
@@ -46,12 +48,6 @@ TPM_RETURNCMD = 0x0100
 TPM_NONOTIFY = 0x0080
 
 _TRAY_WINDOW_SEQUENCE = itertools.count(1)
-_DEFAULT_MENU: tuple[TrayMenuItem | None, ...] = (
-    ("停止并保存", "stop"),
-    ("取消录制", "cancel"),
-    None,
-    ("退出程序（放弃录制）", "exit"),
-)
 
 WNDPROC = ctypes.WINFUNCTYPE(
     ctypes.c_ssize_t,
@@ -125,7 +121,14 @@ class TrayIcon:
         self._tooltip = tooltip
         self._icon_path = icon_path
         self._on_command = on_command
-        self._menu_items = tuple(menu_items) if menu_items is not None else _DEFAULT_MENU
+        if menu_items is None:
+            menu_items = (
+                (tr("停止并保存", "Stop and save"), "stop"),
+                (tr("取消录制", "Cancel recording"), "cancel"),
+                None,
+                (tr("退出程序（放弃录制）", "Exit (discard recording)"), "exit"),
+            )
+        self._menu_items = tuple(menu_items)
         self._menu_commands: dict[int, TrayCommand] = {}
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -135,7 +138,7 @@ class TrayIcon:
         self._icon: int | None = None
         self._owns_icon = False
         self._class_name = (
-            f"ShortVideoCaptureTray_{os.getpid()}_{next(_TRAY_WINDOW_SEQUENCE)}"
+            f"QuickRecTray_{os.getpid()}_{next(_TRAY_WINDOW_SEQUENCE)}"
         )
         self._wndproc = WNDPROC(self._handle_message)
         self._menu_open = False
@@ -146,15 +149,26 @@ class TrayIcon:
 
     def start(self, timeout: float = 4.0) -> None:
         if self._thread is not None:
-            raise TrayError("托盘图标已经启动。")
+            raise TrayError(tr("托盘图标已经启动。", "The tray icon is already running."))
         self._thread = threading.Thread(
             target=self._run, name="tray-icon", daemon=True
         )
         self._thread.start()
         if not self._ready.wait(timeout):
-            raise TrayError("系统托盘启动超时，请稍后重试。")
+            raise TrayError(
+                tr(
+                    "系统托盘启动超时，请稍后重试。",
+                    "The system tray timed out. Please try again.",
+                )
+            )
         if self._error is not None:
-            raise TrayError(f"系统托盘初始化失败：{self._error}") from self._error
+            raise TrayError(
+                tr(
+                    "系统托盘初始化失败：{error}",
+                    "Cannot initialize the system tray: {error}",
+                    error=self._error,
+                )
+            ) from self._error
 
     def stop(self, timeout: float = 2.0) -> None:
         hwnd = self._hwnd
@@ -273,7 +287,7 @@ class TrayIcon:
         hwnd = user32.CreateWindowExW(
             0,
             self._class_name,
-            "ShortVideoCapture",
+            "QuickRecTray",
             0,
             0,
             0,
@@ -315,7 +329,7 @@ class TrayIcon:
         user32.LoadIconW.restype = wintypes.HICON
         fallback = user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
         if not fallback:
-            raise TrayError("无法加载托盘图标。")
+            raise TrayError(tr("无法加载托盘图标。", "Cannot load the tray icon."))
         self._owns_icon = False
         return int(fallback)
 
@@ -337,7 +351,12 @@ class TrayIcon:
         data.hIcon = self._icon
         data.szTip = self._tooltip[:127]
         if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(data)):
-            raise TrayError("无法把图标添加到系统托盘。")
+            raise TrayError(
+                tr(
+                    "无法把图标添加到系统托盘。",
+                    "Cannot add the icon to the system tray.",
+                )
+            )
 
     def _remove_icon(self) -> None:
         if not self._icon or not self._hwnd:

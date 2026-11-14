@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(SPECPATH).resolve().parent
 SRC = ROOT / "src"
 ASSETS = SRC / "short_video_capture" / "assets"
-APP_NAME = "屏幕录制工具"
+APP_NAME = "QuickRec"
 
 a = Analysis(
     [str(ROOT / "packaging" / "launcher.py")],

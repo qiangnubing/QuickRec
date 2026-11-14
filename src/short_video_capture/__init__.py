@@ -1,3 +1,3 @@
-"""Windows 屏幕区域定时录制工具。"""
+"""QuickRec — Windows 屏幕区域录制工具。"""
 
-__version__ = "1.2.2"
+__version__ = "1.3.0"

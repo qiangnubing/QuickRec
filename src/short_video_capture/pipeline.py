@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .audio import AudioClip, AudioRecorder, AudioSelection
 from .capture import CaptureRegion, VideoSettings, record_video
+from .i18n import tr
 from .media import FFmpegError, find_ffmpeg, run_ffmpeg
 
 LOGGER = logging.getLogger(__name__)
@@ -110,7 +111,7 @@ def build_mux_command(
 def record_session(
     region: CaptureRegion,
     output_path: Path,
-    duration_seconds: float,
+    duration_seconds: float | None,
     video_settings: VideoSettings,
     audio_selection: AudioSelection,
     audio_bitrate_kbps: int,
@@ -122,16 +123,33 @@ def record_session(
     """执行完整录制，返回最终文件信息。"""
 
     if not 32 <= audio_bitrate_kbps <= 512:
-        raise ValueError("音频码率必须在 32 到 512 kbps 之间。")
+        raise ValueError(
+            tr(
+                "音频码率必须在 32 到 512 kbps 之间。",
+                "Audio bitrate must be between 32 and 512 kbps.",
+            )
+        )
     output_path = Path(output_path)
     if output_path.exists():
-        raise FileExistsError(f"目标文件已存在：{output_path}")
+        raise FileExistsError(
+            tr(
+                "目标文件已存在：{path}",
+                "The target file already exists: {path}",
+                path=output_path,
+            )
+        )
     ffmpeg = find_ffmpeg()
 
     try:
         temporary = tempfile.TemporaryDirectory(prefix="screen_recorder_")
     except OSError as exc:
-        raise RuntimeError(f"无法创建临时目录：{exc}") from exc
+        raise RuntimeError(
+            tr(
+                "无法创建临时目录：{error}",
+                "Cannot create a temporary folder: {error}",
+                error=exc,
+            )
+        ) from exc
 
     with temporary:
         temp_path = Path(temporary.name)
@@ -165,7 +183,12 @@ def record_session(
             ]
             warnings = list(recorder.warnings)
             if audio_selection.enabled and not clips:
-                warnings.append("没有采集到有效音频，已保存无声视频。")
+                warnings.append(
+                    tr(
+                        "没有采集到有效音频，已保存无声视频。",
+                        "No usable audio was captured; saved a silent video.",
+                    )
+                )
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
             if clips:
@@ -182,7 +205,12 @@ def record_session(
                 shutil.move(str(video.path), str(output_path))
 
             if not output_path.is_file() or output_path.stat().st_size == 0:
-                raise RuntimeError("视频文件未生成或内容为空。")
+                raise RuntimeError(
+                    tr(
+                        "视频文件未生成或内容为空。",
+                        "The video file was not created or is empty.",
+                    )
+                )
             return RecordingResult(
                 path=output_path,
                 frame_count=video.frame_count,

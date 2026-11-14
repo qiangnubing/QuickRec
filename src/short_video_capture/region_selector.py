@@ -6,6 +6,7 @@ import tkinter as tk
 from collections.abc import Callable
 
 from .capture import CaptureRegion
+from .i18n import tr
 from .win32 import primary_work_area, virtual_screen_rect
 
 MIN_SELECTION = 32
@@ -59,7 +60,7 @@ class RegionSelector:
         self._title_id = self.canvas.create_text(
             center_x,
             42,
-            text="拖动鼠标框选录制区域",
+            text=tr("拖动鼠标框选录制区域", "Drag to select a recording area"),
             fill="#FFFFFF",
             font=("Microsoft YaHei UI", 18, "bold"),
             tags="ui",
@@ -67,7 +68,10 @@ class RegionSelector:
         self._hint_id = self.canvas.create_text(
             center_x,
             76,
-            text="松开后确认选区　·　Enter 开始录制　·　Esc 取消",
+            text=tr(
+                "松开后确认选区　·　Enter 开始录制　·　Esc 取消",
+                "Release to confirm · Enter to start · Esc to cancel",
+            ),
             fill=_HINT_COLOR,
             font=("Microsoft YaHei UI", 10),
             tags="ui",
@@ -177,7 +181,11 @@ class RegionSelector:
             for handle in self._handles:
                 self.canvas.itemconfigure(handle, state="hidden")
             self._set_hint(
-                f"选区至少需要 {MIN_SELECTION}×{MIN_SELECTION} 像素，请重新拖动",
+                tr(
+                    "选区至少需要 {size}×{size} 像素，请重新拖动",
+                    "The selection must be at least {size}×{size} pixels. Drag again.",
+                    size=MIN_SELECTION,
+                ),
                 _WARN_COLOR,
             )
             self._schedule_hint_reset()
@@ -188,7 +196,10 @@ class RegionSelector:
         self._move_size_label(left, top, width, height)
         self._place_handles(left, top, right, bottom)
         self._set_hint(
-            "确认选区后开始录制　·　Enter 开始　·　Esc 取消",
+            tr(
+                "确认选区后开始录制　·　Enter 开始　·　Esc 取消",
+                "Press Enter or Start to record · Esc to cancel",
+            ),
             _HINT_COLOR,
         )
         self._show_action_bar()
@@ -240,7 +251,12 @@ class RegionSelector:
 
         tk.Label(
             content,
-            text=f"选区 {width} × {height}",
+            text=tr(
+                "选区 {width} × {height}",
+                "Selection {width} × {height}",
+                width=width,
+                height=height,
+            ),
             bg="#0B1220",
             fg="#94A3B8",
             font=("Microsoft YaHei UI", 9),
@@ -248,7 +264,7 @@ class RegionSelector:
 
         start_button = tk.Button(
             content,
-            text="开始录制",
+            text=tr("开始录制", "Start recording"),
             command=self._confirm,
             bg="#EF4444",
             fg="#FFFFFF",
@@ -266,7 +282,7 @@ class RegionSelector:
 
         tk.Button(
             content,
-            text="重新框选",
+            text=tr("重新框选", "Reselect"),
             command=self._reset_selection,
             bg="#1E293B",
             fg="#E2E8F0",
@@ -283,7 +299,7 @@ class RegionSelector:
 
         tk.Button(
             content,
-            text="取消",
+            text=tr("取消", "Cancel"),
             command=self.cancel,
             bg="#1E293B",
             fg="#CBD5E1",

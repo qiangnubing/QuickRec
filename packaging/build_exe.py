@@ -3,7 +3,7 @@
 用法（项目根目录）：
     .venv\\Scripts\\python.exe packaging\\build_exe.py
 
-脚本会依次运行单元测试、调用 PyInstaller 构建 ``dist\\屏幕录制工具.exe``，
+脚本会依次运行单元测试、调用 PyInstaller 构建 ``dist\\QuickRec.exe``，
 并启动成品执行内置的打包自检，确认依赖、图标、屏幕采集和 FFmpeg 均可使用。
 """
 
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "packaging" / "short_video_capture.spec"
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-APP_NAME = "屏幕录制工具"
+APP_NAME = "QuickRec"
 EXE = DIST / f"{APP_NAME}.exe"
 SELF_TEST_FLAG = "--package-self-test"
 

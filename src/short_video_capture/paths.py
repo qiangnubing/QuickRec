@@ -12,7 +12,9 @@ from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
-_FILE_PREFIX = "屏幕录制"
+from .i18n import tr
+
+_FILE_PREFIX = "QuickRec"
 
 
 class OutputDirectoryError(RuntimeError):
@@ -67,7 +69,7 @@ def _known_folder(folder_id: _GUID) -> Path:
         ctypes.byref(folder_id), 0, None, ctypes.byref(path_ptr)
     )
     if result != 0 or not path_ptr.value:
-        raise OSError("无法读取 Windows 视频文件夹")
+        raise OSError(tr("无法读取 Windows 视频文件夹", "Cannot read the Windows Videos folder"))
     try:
         return Path(path_ptr.value)
     finally:
@@ -79,11 +81,13 @@ def normalize_output_dir(raw_path: str | os.PathLike[str]) -> Path:
 
     text = os.fspath(raw_path).strip().strip('"')
     if not text:
-        raise OutputDirectoryError("保存路径不能为空。")
+        raise OutputDirectoryError(tr("保存路径不能为空。", "The save path cannot be empty."))
     try:
         return Path(os.path.expandvars(os.path.expanduser(text))).resolve()
     except OSError as exc:
-        raise OutputDirectoryError(f"保存路径无效：{exc}") from exc
+        raise OutputDirectoryError(
+            tr("保存路径无效：{error}", "Invalid save path: {error}", error=exc)
+        ) from exc
 
 
 def ensure_output_dir(raw_path: str | os.PathLike[str]) -> Path:
@@ -93,9 +97,22 @@ def ensure_output_dir(raw_path: str | os.PathLike[str]) -> Path:
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise OutputDirectoryError(f"无法创建保存目录：{directory}\n{exc}") from exc
+        raise OutputDirectoryError(
+            tr(
+                "无法创建保存目录：{directory}\n{error}",
+                "Cannot create the save folder: {directory}\n{error}",
+                directory=directory,
+                error=exc,
+            )
+        ) from exc
     if not directory.is_dir():
-        raise OutputDirectoryError(f"保存路径不是文件夹：{directory}")
+        raise OutputDirectoryError(
+            tr(
+                "保存路径不是文件夹：{directory}",
+                "The save path is not a folder: {directory}",
+                directory=directory,
+            )
+        )
 
     _probe_writable(directory)
     return directory
@@ -114,7 +131,14 @@ def _probe_writable(directory: Path) -> None:
             with tempfile.NamedTemporaryFile(dir=directory, prefix=".write_test_", delete=True):
                 pass
         except OSError as exc:
-            raise OutputDirectoryError(f"保存目录不可写：{directory}\n{exc}") from exc
+            raise OutputDirectoryError(
+                tr(
+                    "保存目录不可写：{directory}\n{error}",
+                    "The save folder is not writable: {directory}\n{error}",
+                    directory=directory,
+                    error=exc,
+                )
+            ) from exc
         return
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -132,7 +156,7 @@ def _probe_writable(directory: Path) -> None:
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = [wintypes.HANDLE]
 
-    probe = directory / f".screen_recorder_write_{os.getpid()}_{secrets.token_hex(4)}"
+    probe = directory / f".quickrec_write_{os.getpid()}_{secrets.token_hex(4)}"
     handle = create_file(
         str(probe),
         0x40000000,  # GENERIC_WRITE
@@ -145,8 +169,15 @@ def _probe_writable(directory: Path) -> None:
     invalid_handle = ctypes.c_void_p(-1).value
     if handle in (None, invalid_handle):
         error = ctypes.get_last_error()
-        detail = ctypes.FormatError(error) if error else "权限不足"
-        raise OutputDirectoryError(f"保存目录不可写：{directory}\n{detail}")
+        detail = ctypes.FormatError(error) if error else tr("权限不足", "Permission denied")
+        raise OutputDirectoryError(
+            tr(
+                "保存目录不可写：{directory}\n{detail}",
+                "The save folder is not writable: {directory}\n{detail}",
+                directory=directory,
+                detail=detail,
+            )
+        )
     close_handle(handle)
     try:
         probe.unlink(missing_ok=True)
@@ -173,7 +204,7 @@ def fallback_output_dir() -> Path:
     candidates = [
         application_dir() / "output",
         Path.cwd() / "output",
-        Path(tempfile.gettempdir()) / "屏幕录制",
+        Path(tempfile.gettempdir()) / "QuickRec",
     ]
     seen: set[str] = set()
     errors: list[str] = []
@@ -187,7 +218,13 @@ def fallback_output_dir() -> Path:
         except OutputDirectoryError as exc:
             errors.append(str(exc))
     detail = "\n".join(errors)
-    raise OutputDirectoryError(f"找不到可写的保存目录。\n{detail}")
+    raise OutputDirectoryError(
+        tr(
+            "找不到可写的保存目录。\n{detail}",
+            "No writable save folder was found.\n{detail}",
+            detail=detail,
+        )
+    )
 
 
 def build_output_path(directory: Path, when: datetime | None = None) -> Path:

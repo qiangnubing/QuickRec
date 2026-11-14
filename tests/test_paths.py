@@ -53,14 +53,14 @@ class OutputPathTests(unittest.TestCase):
             directory = Path(temp)
             when = datetime(2026, 10, 19, 8, 30, 5)
             first = build_output_path(directory, when)
-            self.assertEqual(first.name, "屏幕录制_2026-10-19_08-30-05.mp4")
+            self.assertEqual(first.name, "QuickRec_2026-10-19_08-30-05.mp4")
             first.write_bytes(b"x")
 
             second = build_output_path(directory, when)
-            self.assertEqual(second.name, "屏幕录制_2026-10-19_08-30-05_2.mp4")
+            self.assertEqual(second.name, "QuickRec_2026-10-19_08-30-05_2.mp4")
             second.write_bytes(b"x")
             third = build_output_path(directory, when)
-            self.assertEqual(third.name, "屏幕录制_2026-10-19_08-30-05_3.mp4")
+            self.assertEqual(third.name, "QuickRec_2026-10-19_08-30-05_3.mp4")
 
     def test_format_bytes(self) -> None:
         self.assertEqual(format_bytes(0), "0 B")

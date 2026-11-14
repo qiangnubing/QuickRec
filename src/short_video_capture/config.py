@@ -9,8 +9,11 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .i18n import normalize_language, tr
+
 LOGGER = logging.getLogger(__name__)
-DURATION_OPTIONS = (10, 20, 40)
+DURATION_OPTIONS = (10, 20, 40, 60)
+MAX_DURATION_SENTINEL = 0
 AUDIO_BITRATE_OPTIONS = (64, 96, 128, 160, 192, 256, 320)
 DEFAULT_DURATION = 10
 MIN_DURATION = 1
@@ -24,49 +27,67 @@ MAX_AUDIO_BITRATE_KBPS = 512
 DEFAULT_FPS = 30
 DEFAULT_VIDEO_BITRATE_MBPS = 8.0
 DEFAULT_AUDIO_BITRATE_KBPS = 192
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 
 def parse_duration(text: str) -> int:
     value = text.strip()
     if not value:
-        raise ValueError("请输入录制时长。")
+        raise ValueError(tr("请输入录制时长。", "Enter a recording duration."))
     try:
         seconds = int(value)
     except ValueError as exc:
-        raise ValueError("录制时长必须是整数秒。") from exc
+        raise ValueError(tr("录制时长必须是整数秒。", "Duration must be a whole number of seconds.")) from exc
     if not MIN_DURATION <= seconds <= MAX_DURATION:
-        raise ValueError(f"录制时长需在 {MIN_DURATION} 到 {MAX_DURATION} 秒之间。")
+        raise ValueError(
+            tr(
+                "录制时长需在 {low} 到 {high} 秒之间。",
+                "Duration must be between {low} and {high} seconds.",
+                low=MIN_DURATION,
+                high=MAX_DURATION,
+            )
+        )
     return seconds
 
 
 def parse_fps(text: str) -> int:
     value = text.strip()
     if not value:
-        raise ValueError("请输入帧率。")
+        raise ValueError(tr("请输入帧率。", "Enter a frame rate."))
     try:
         fps = int(value)
     except ValueError as exc:
-        raise ValueError("帧率必须是整数。") from exc
+        raise ValueError(tr("帧率必须是整数。", "Frame rate must be a whole number.")) from exc
     if not MIN_FPS <= fps <= MAX_FPS:
-        raise ValueError(f"帧率需在 {MIN_FPS} 到 {MAX_FPS} FPS 之间。")
+        raise ValueError(
+            tr(
+                "帧率需在 {low} 到 {high} FPS 之间。",
+                "Frame rate must be between {low} and {high} FPS.",
+                low=MIN_FPS,
+                high=MAX_FPS,
+            )
+        )
     return fps
 
 
 def parse_video_bitrate_mbps(text: str) -> float:
     value = text.strip().lower().removesuffix("mbps").strip()
     if not value:
-        raise ValueError("请输入视频码率。")
+        raise ValueError(tr("请输入视频码率。", "Enter a video bitrate."))
     try:
         bitrate = float(value)
     except ValueError as exc:
-        raise ValueError("视频码率必须是数字。") from exc
+        raise ValueError(tr("视频码率必须是数字。", "Video bitrate must be a number.")) from exc
     if not math.isfinite(bitrate):
-        raise ValueError("视频码率必须是有限数字。")
+        raise ValueError(tr("视频码率必须是有限数字。", "Video bitrate must be a finite number."))
     if not MIN_VIDEO_BITRATE_MBPS <= bitrate <= MAX_VIDEO_BITRATE_MBPS:
         raise ValueError(
-            f"视频码率需在 {MIN_VIDEO_BITRATE_MBPS:g} 到 "
-            f"{MAX_VIDEO_BITRATE_MBPS:g} Mbps 之间。"
+            tr(
+                "视频码率需在 {low:g} 到 {high:g} Mbps 之间。",
+                "Video bitrate must be between {low:g} and {high:g} Mbps.",
+                low=MIN_VIDEO_BITRATE_MBPS,
+                high=MAX_VIDEO_BITRATE_MBPS,
+            )
         )
     return bitrate
 
@@ -74,15 +95,19 @@ def parse_video_bitrate_mbps(text: str) -> float:
 def parse_audio_bitrate_kbps(text: str) -> int:
     value = text.strip().lower().removesuffix("kbps").strip()
     if not value:
-        raise ValueError("请输入音频码率。")
+        raise ValueError(tr("请输入音频码率。", "Enter an audio bitrate."))
     try:
         bitrate = int(value)
     except ValueError as exc:
-        raise ValueError("音频码率必须是整数。") from exc
+        raise ValueError(tr("音频码率必须是整数。", "Audio bitrate must be a whole number.")) from exc
     if not MIN_AUDIO_BITRATE_KBPS <= bitrate <= MAX_AUDIO_BITRATE_KBPS:
         raise ValueError(
-            f"音频码率需在 {MIN_AUDIO_BITRATE_KBPS} 到 "
-            f"{MAX_AUDIO_BITRATE_KBPS} kbps 之间。"
+            tr(
+                "音频码率需在 {low} 到 {high} kbps 之间。",
+                "Audio bitrate must be between {low} and {high} kbps.",
+                low=MIN_AUDIO_BITRATE_KBPS,
+                high=MAX_AUDIO_BITRATE_KBPS,
+            )
         )
     return bitrate
 
@@ -99,11 +124,15 @@ class AppSettings:
     system_audio_device: str = ""
     microphone_device: str = ""
     record_cursor: bool = True
+    language: str = "zh"
 
     def normalized(self) -> "AppSettings":
-        duration = _int_in_range(
-            self.duration_seconds, DEFAULT_DURATION, MIN_DURATION, MAX_DURATION
-        )
+        if self.duration_seconds == MAX_DURATION_SENTINEL:
+            duration = MAX_DURATION_SENTINEL
+        else:
+            duration = _int_in_range(
+                self.duration_seconds, DEFAULT_DURATION, MIN_DURATION, MAX_DURATION
+            )
         fps = _int_in_range(self.fps, DEFAULT_FPS, MIN_FPS, MAX_FPS)
         video_bitrate = _float_in_range(
             self.video_bitrate_mbps,
@@ -130,6 +159,7 @@ class AppSettings:
             system_audio_device=system_audio_device,
             microphone_device=microphone_device,
             record_cursor=bool(self.record_cursor),
+            language=normalize_language(self.language),
         )
 
 
@@ -153,22 +183,36 @@ def _float_in_range(
 def settings_path() -> Path:
     base = os.environ.get("APPDATA")
     root = Path(base) if base else Path.home() / "AppData" / "Roaming"
+    return root / "QuickRec" / "settings.json"
+
+
+def legacy_settings_path() -> Path:
+    base = os.environ.get("APPDATA")
+    root = Path(base) if base else Path.home() / "AppData" / "Roaming"
     return root / "ShortVideoCapture" / "settings.json"
 
 
 class SettingsStore:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or settings_path()
+        self._legacy_path = None if path is not None else legacy_settings_path()
 
     @property
     def path(self) -> Path:
         return self._path
 
     def load(self) -> AppSettings:
+        path = self._path
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return AppSettings()
+            if self._legacy_path is None or not self._legacy_path.is_file():
+                return AppSettings()
+            try:
+                data = json.loads(self._legacy_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                LOGGER.warning("读取设置失败，使用默认值：%s", exc)
+                return AppSettings()
         except (OSError, json.JSONDecodeError) as exc:
             LOGGER.warning("读取设置失败，使用默认值：%s", exc)
             return AppSettings()
@@ -190,6 +234,7 @@ class SettingsStore:
             system_audio_device=_as_str(data.get("system_audio_device")),
             microphone_device=_as_str(data.get("microphone_device")),
             record_cursor=_as_bool(data.get("record_cursor"), True),
+            language=normalize_language(data.get("language")),
         ).normalized()
         schema_version = _as_int(data.get("schema_version"), 1)
         if (
