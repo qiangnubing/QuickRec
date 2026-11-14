@@ -34,7 +34,7 @@ Windows 桌面屏幕区域录制工具。框选屏幕任意区域，按 10 / 20 
 - Windows 10 / 11
 - Python 3.12+
 - 依赖：`mss`、`numpy`、`soundcard`、`imageio-ffmpeg`
-- 打包单文件 exe 需要额外安装 `pyinstaller`（仅构建机需要）
+- 打包 exe 需要额外安装 `pyinstaller`（仅构建机需要）
 - `soundcard` 使用 Windows WASAPI，提供系统声音环回与麦克风采集。
 - `imageio-ffmpeg` 自带 FFmpeg 可执行文件，无需另外安装 FFmpeg。
 - Tkinter 随 Windows 版 Python 一起安装。
@@ -62,43 +62,63 @@ python run.py
 quickrec
 ```
 
-## 打包为单文件 exe
+## 打包为 exe
 
-需要 64 位 Python 3.12 和已装好依赖的虚拟环境。项目已包含 PyInstaller 配置与构建脚本：
+需要 64 位 Python 3.12 和已装好依赖的虚拟环境。项目包含单文件、目录两种 PyInstaller 配置和统一构建脚本：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pyinstaller
-.\.venv\Scripts\python.exe packaging\build_exe.py
 ```
 
-构建脚本会先运行单元测试，再用 `packaging\short_video_capture.spec` 生成：
+目录模式（推荐，启动快，不需要每次解压依赖）：
+
+```powershell
+.\.venv\Scripts\python.exe packaging\build_exe.py --mode onedir
+```
+
+生成：
 
 ```text
-dist\QuickRec.exe
+dist\QuickRec\
+├── QuickRec.exe
+└── _internal\...
 ```
 
-产物是单个自包含文件，目标电脑无需安装 Python、Tk 或 FFmpeg。构建结束后脚本会自动启动该 exe 执行打包自检，检查依赖导入、应用图标、Tk、屏幕采集、内置 FFmpeg 的 H.264/AAC 编码以及音频设备枚举。
+分发时保留整个 `dist\QuickRec` 文件夹，可压缩成 zip 后复制到其他电脑；目标电脑无需安装 Python、Tk 或 FFmpeg。
+
+单文件模式：
+
+```powershell
+.\.venv\Scripts\python.exe packaging\build_exe.py --mode onefile
+```
+
+生成 `dist\QuickRec.exe` 单个文件。
+
+构建脚本会先运行单元测试，再调用 PyInstaller，最后启动成品执行自检，检查依赖导入、应用图标、Tk、屏幕采集、内置 FFmpeg 的 H.264/AAC 编码以及音频设备枚举。
 
 常用参数：
 
 | 参数 | 作用 |
 | --- | --- |
+| `--mode onedir` | 目录模式，推荐；产物为 `dist\QuickRec\` |
+| `--mode onefile` | 单文件模式；产物为 `dist\QuickRec.exe`（默认） |
 | `--skip-tests` | 跳过单元测试（不建议） |
 | `--skip-smoke-test` | 跳过成品自检（受限沙箱或无法启动图形界面时使用） |
 
 也可以直接调用 PyInstaller：
 
 ```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\short_video_capture_onedir.spec
 .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\short_video_capture.spec
 ```
 
 打包说明：
 
-- 单文件模式首次启动时会把运行时解压到系统临时目录，启动比源码运行稍慢；退出后临时目录自动清理。
-- 在受限账户或低权限沙箱中，自检可能因无法写入临时目录而报 `Failed to extract VCRUNTIME140.dll`；这通常不代表成品不可用，可在普通桌面双击 exe 验证，或构建时加 `--skip-smoke-test`。
+- 目录模式不会在启动时解压依赖，启动更快，也更适合受限账户或低权限沙箱；复制时不要把 `_internal` 拆开。
+- 单文件模式首次启动时会把运行时解压到系统临时目录，启动稍慢；在受限沙箱中可能报 `Failed to extract VCRUNTIME140.dll`，这不代表成品不可用，可在普通桌面验证或改用目录模式。
 - 程序未做代码签名，复制到其他电脑首次运行时 Windows SmartScreen 可能提示“未知发布者”，选择“更多信息 → 仍要运行”即可。
-- 少数杀毒软件可能对 PyInstaller 单文件程序误报，可将 exe 加入信任列表，或改用源码方式运行。
-- 不要把 exe 放在只读目录：若系统“视频”文件夹不可写，程序会把录制文件保存到 exe 同目录的 `output` 文件夹。
+- 少数杀毒软件可能对 PyInstaller 程序误报，可将程序加入信任列表，或改用源码方式运行。
+- 不要把程序放在只读目录：若系统“视频”文件夹不可写，程序会把录制文件保存到程序同目录的 `output` 文件夹。
 
 ## 使用方法
 
@@ -156,9 +176,10 @@ dist\QuickRec.exe
 ├── run.py                         # 免安装启动入口
 ├── pyproject.toml                 # 依赖与打包配置
 ├── packaging/
-│   ├── build_exe.py               # 单文件构建与成品自检
+│   ├── build_exe.py               # 单文件/目录构建与成品自检
 │   ├── launcher.py                # PyInstaller 打包入口
-│   ├── short_video_capture.spec   # PyInstaller 配置
+│   ├── short_video_capture.spec   # 单文件模式配置
+│   ├── short_video_capture_onedir.spec # 目录模式配置
 │   └── version_info.txt           # exe 版本信息
 ├── src/short_video_capture/
 │   ├── app.py                     # 主界面与录制流程
