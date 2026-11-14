@@ -265,15 +265,16 @@ class RecordVideoTests(unittest.TestCase):
         self.assertFalse(output.exists())
 
     def test_rejects_invalid_duration(self) -> None:
-        with self.assertRaises(ValueError):
-            record_video(
-                CaptureRegion(0, 0, 64, 64),
-                self.directory / "a.mp4",
-                duration_seconds=0,
-                settings=VideoSettings(),
-                sink_factory=FakeSink,
-            include_cursor=False,
-            )
+        for duration in (0, 3601):
+            with self.assertRaises(ValueError):
+                record_video(
+                    CaptureRegion(0, 0, 64, 64),
+                    self.directory / "a.mp4",
+                    duration_seconds=duration,
+                    settings=VideoSettings(),
+                    sink_factory=FakeSink,
+                    include_cursor=False,
+                )
 
     def test_refuses_to_overwrite_existing_file(self) -> None:
         output = self.directory / "existing.mp4"

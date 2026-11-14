@@ -44,4 +44,6 @@ desktop.ini
 .env.*
 !.env.example
 *.local
+settings.json
+settings.tmp
 secrets/

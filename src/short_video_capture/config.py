@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .i18n import normalize_language, tr
+from .paths import application_dir
 
 LOGGER = logging.getLogger(__name__)
 DURATION_OPTIONS = (10, 20, 40, 60)
@@ -17,7 +18,7 @@ MAX_DURATION_SENTINEL = 0
 AUDIO_BITRATE_OPTIONS = (64, 96, 128, 160, 192, 256, 320)
 DEFAULT_DURATION = 10
 MIN_DURATION = 1
-MAX_DURATION = 86400
+MAX_DURATION = 3600
 MIN_FPS = 5
 MAX_FPS = 60
 MIN_VIDEO_BITRATE_MBPS = 0.5
@@ -181,37 +182,48 @@ def _float_in_range(
 
 
 def settings_path() -> Path:
-    base = os.environ.get("APPDATA")
-    root = Path(base) if base else Path.home() / "AppData" / "Roaming"
-    return root / "QuickRec" / "settings.json"
+    """设置文件放在程序所在目录，便于用户直接查看和备份。"""
+
+    return application_dir() / "settings.json"
 
 
-def legacy_settings_path() -> Path:
+def legacy_settings_paths() -> tuple[Path, ...]:
+    """旧版本把设置放在 AppData，启动时按新到旧顺序兼容读取。"""
+
     base = os.environ.get("APPDATA")
     root = Path(base) if base else Path.home() / "AppData" / "Roaming"
-    return root / "ShortVideoCapture" / "settings.json"
+    return (
+        root / "QuickRec" / "settings.json",
+        root / "ShortVideoCapture" / "settings.json",
+    )
 
 
 class SettingsStore:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or settings_path()
-        self._legacy_path = None if path is not None else legacy_settings_path()
+        self._legacy_paths = () if path is not None else legacy_settings_paths()
 
     @property
     def path(self) -> Path:
         return self._path
 
     def load(self) -> AppSettings:
-        path = self._path
+        loaded_from_legacy = False
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(self._path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
-            if self._legacy_path is None or not self._legacy_path.is_file():
-                return AppSettings()
-            try:
-                data = json.loads(self._legacy_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                LOGGER.warning("读取设置失败，使用默认值：%s", exc)
+            data = None
+            for legacy_path in self._legacy_paths:
+                try:
+                    data = json.loads(legacy_path.read_text(encoding="utf-8-sig"))
+                except FileNotFoundError:
+                    continue
+                except (OSError, json.JSONDecodeError) as exc:
+                    LOGGER.warning("读取旧设置失败：%s", exc)
+                    continue
+                loaded_from_legacy = True
+                break
+            if data is None:
                 return AppSettings()
         except (OSError, json.JSONDecodeError) as exc:
             LOGGER.warning("读取设置失败，使用默认值：%s", exc)
@@ -247,6 +259,9 @@ class SettingsStore:
             # 旧版本在缺少音频依赖时可能写入“两路都关闭、无设备”的配置，
             # 这更可能是失败残留而不是有意选择；升级后恢复默认系统声音。
             loaded.system_audio_enabled = True
+        if loaded_from_legacy:
+            # 立即在程序目录生成新的可见设置文件，方便用户查看和备份。
+            self.save(loaded)
         return loaded
 
     def save(self, settings: AppSettings) -> None:

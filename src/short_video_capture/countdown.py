@@ -37,6 +37,7 @@ class CountdownOverlay:
         self._dot_visible = True
         self._stopping = False
         self._closed = False
+        self._timer_width = 10 if self._max_mode else 8
 
         self.window = tk.Toplevel(root)
         self.window.withdraw()
@@ -54,7 +55,7 @@ class CountdownOverlay:
         card.pack(fill="both", expand=True)
 
         content = tk.Frame(card, bg=_BG)
-        content.pack(padx=14, pady=9)
+        content.pack(padx=10, pady=8)
 
         self._dot = tk.Canvas(
             content,
@@ -64,7 +65,7 @@ class CountdownOverlay:
             highlightthickness=0,
             bd=0,
         )
-        self._dot.pack(side="left", padx=(0, 8))
+        self._dot.pack(side="left", padx=(0, 6))
         self._dot_id = self._dot.create_oval(2, 2, 10, 10, fill=_ACCENT, outline="")
 
         tk.Label(
@@ -73,7 +74,7 @@ class CountdownOverlay:
             bg=_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(0, 12))
+        ).pack(side="left", padx=(0, 8))
 
         self._timer_font = tkfont.Font(family="Consolas", size=17, weight="bold")
         self._timer = tk.Label(
@@ -86,7 +87,7 @@ class CountdownOverlay:
             bg=_BG,
             fg=_FG,
             font=self._timer_font,
-            width=12,
+            width=self._timer_width,
             anchor="center",
         )
         self._timer.pack(side="left")
@@ -103,12 +104,12 @@ class CountdownOverlay:
             relief="flat",
             bd=0,
             highlightthickness=0,
-            padx=10,
+            padx=8,
             pady=2,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9, "bold"),
         )
-        self._stop_button.pack(side="left", padx=(14, 0))
+        self._stop_button.pack(side="left", padx=(10, 0))
 
     def show(self) -> None:
         self.window.deiconify()
@@ -129,11 +130,21 @@ class CountdownOverlay:
         y = area.bottom - height - margin
         self.window.geometry(f"{width}x{height}{x:+d}{y:+d}")
 
+    def _set_timer_text(self, text: str) -> None:
+        # MAX 超过一小时后文本会变长，按需加宽并重新贴边，避免被截断。
+        needed = max(self._timer_width, len(text))
+        if needed != self._timer_width:
+            self._timer_width = needed
+            self._timer.configure(width=needed)
+            self.window.update_idletasks()
+            self._place_bottom_right()
+        self._timer.configure(text=text)
+
     def set_remaining(self, remaining_seconds: float) -> None:
         if self._closed:
             return
         try:
-            self._timer.configure(text=self._format(remaining_seconds))
+            self._set_timer_text(self._format(remaining_seconds))
         except tk.TclError:
             self._closed = True
 
@@ -142,7 +153,7 @@ class CountdownOverlay:
         if self._closed:
             return
         try:
-            self._timer.configure(text=self._format_max(elapsed_seconds))
+            self._set_timer_text(self._format_max(elapsed_seconds))
         except tk.TclError:
             self._closed = True
 

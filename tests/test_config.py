@@ -12,18 +12,20 @@ from short_video_capture.config import (
     parse_duration,
     parse_fps,
     parse_video_bitrate_mbps,
+    settings_path,
 )
+from short_video_capture.paths import application_dir
 
 
 class ValidationTests(unittest.TestCase):
     def test_duration_bounds(self) -> None:
         self.assertEqual(parse_duration("1"), 1)
+        self.assertEqual(parse_duration("3599"), 3599)
         self.assertEqual(parse_duration("3600"), 3600)
-        self.assertEqual(parse_duration("86400"), 86400)
         with self.assertRaises(ValueError):
             parse_duration("0")
         with self.assertRaises(ValueError):
-            parse_duration("86401")
+            parse_duration("3601")
         with self.assertRaises(ValueError):
             parse_duration("1.5")
         with self.assertRaises(ValueError):
@@ -54,6 +56,11 @@ class ValidationTests(unittest.TestCase):
             parse_audio_bitrate_kbps("31")
         with self.assertRaises(ValueError):
             parse_audio_bitrate_kbps("513")
+
+
+class SettingsPathTests(unittest.TestCase):
+    def test_settings_file_lives_next_to_app(self) -> None:
+        self.assertEqual(settings_path(), application_dir() / "settings.json")
 
 
 class SettingsStoreTests(unittest.TestCase):

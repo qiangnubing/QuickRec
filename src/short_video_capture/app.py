@@ -24,6 +24,7 @@ from .capture import CaptureRegion, NoFramesError, VideoSettings
 from .config import (
     AUDIO_BITRATE_OPTIONS,
     DURATION_OPTIONS,
+    MAX_DURATION,
     MAX_DURATION_SENTINEL,
     AppSettings,
     SettingsStore,
@@ -155,6 +156,9 @@ class RecorderApp:
         self._fit_and_center_window()
         if self._initial_notice:
             self._set_status(self._initial_notice, self._initial_notice_color)
+        # 首次启动也立即生成程序目录下的 settings.json，用户无需关闭程序
+        # 就能看到并备份自己的选项。
+        self._save_settings()
         self.root.bind("<Unmap>", self._on_root_unmap, add="+")
         self._poll_job = self.root.after(100, self._poll_events)
 
@@ -395,7 +399,10 @@ class RecorderApp:
         ).pack(side="left")
         tk.Label(
             title_row,
-            text=tr("1–86400 秒 / MAX", "1–86400 sec / MAX"),
+            text=tr(
+                f"1–{MAX_DURATION} 秒 / MAX",
+                f"1–{MAX_DURATION} sec / MAX",
+            ),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
@@ -434,7 +441,7 @@ class RecorderApp:
         tk.Spinbox(
             row,
             from_=1,
-            to=86400,
+            to=MAX_DURATION,
             increment=1,
             width=7,
             textvariable=self.duration_text,

@@ -14,6 +14,7 @@ from typing import Protocol
 import mss
 import numpy as np
 
+from .config import MAX_DURATION
 from .cursor import CursorRenderer
 from .i18n import tr
 from .media import FFmpegVideoSink
@@ -182,11 +183,12 @@ def record_video(
 ) -> VideoCaptureResult:
     """录制指定区域，阻塞直到录制完成或 ``stop_event`` 被设置。"""
 
-    if duration_seconds is not None and not 0 < duration_seconds <= 86400:
+    if duration_seconds is not None and not 0 < duration_seconds <= MAX_DURATION:
         raise ValueError(
             tr(
-                "录制时长必须在 1 到 86400 秒之间，或为 MAX。",
-                "Duration must be between 1 and 86400 seconds, or MAX.",
+                "录制时长必须在 1 到 {high} 秒之间，或为 MAX。",
+                "Duration must be between 1 and {high} seconds, or MAX.",
+                high=MAX_DURATION,
             )
         )
     output_path = Path(output_path)
