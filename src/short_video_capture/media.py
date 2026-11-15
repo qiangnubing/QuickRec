@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import threading
 from collections import deque
 from collections.abc import Sequence
+from ctypes import wintypes
 from functools import lru_cache
 from pathlib import Path
 
@@ -17,6 +19,11 @@ import numpy as np
 from .i18n import tr
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_VIDEO_ENCODER = "libx264"
+_MIN_HW_ENCODER_SIZE = 128
+_HW_ENCODER_CANDIDATES = ("h264_nvenc", "h264_qsv", "h264_amf")
+_VALID_VIDEO_ENCODERS = (DEFAULT_VIDEO_ENCODER, *_HW_ENCODER_CANDIDATES)
+_PIPE_BUFFER_BYTES = 1024 * 1024
 
 
 class FFmpegError(RuntimeError):
@@ -67,6 +74,197 @@ def creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+class _DISPLAY_DEVICEW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("DeviceName", wintypes.WCHAR * 32),
+        ("DeviceString", wintypes.WCHAR * 128),
+        ("StateFlags", wintypes.DWORD),
+        ("DeviceID", wintypes.WCHAR * 128),
+        ("DeviceKey", wintypes.WCHAR * 128),
+    ]
+
+
+def _x264_thread_count() -> int:
+    # 限制 x264 线程数可避免高核数 CPU 上的过度线程同步开销。
+    return min(4, max(2, (os.cpu_count() or 4) // 2))
+
+
+def _filter_thread_count() -> int:
+    return min(2, max(1, os.cpu_count() or 2))
+
+
+def _display_adapter_candidates() -> tuple[str, ...]:
+    """根据当前显示适配器厂商优先排序可能的硬件 H.264 编码器。"""
+
+    if os.name != "nt":
+        return ()
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.EnumDisplayDevicesW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(_DISPLAY_DEVICEW),
+            wintypes.DWORD,
+        ]
+        user32.EnumDisplayDevicesW.restype = wintypes.BOOL
+    except (AttributeError, OSError):
+        return ()
+
+    matched: list[str] = []
+    index = 0
+    while index < 32:
+        device = _DISPLAY_DEVICEW()
+        device.cb = ctypes.sizeof(_DISPLAY_DEVICEW)
+        if not user32.EnumDisplayDevicesW(None, index, ctypes.byref(device), 0):
+            break
+        index += 1
+        signature = f"{device.DeviceID} {device.DeviceString}".upper()
+        if "VEN_10DE" in signature or "NVIDIA" in signature:
+            matched.append("h264_nvenc")
+        elif "VEN_8086" in signature or "INTEL" in signature:
+            matched.append("h264_qsv")
+        elif (
+            "VEN_1002" in signature
+            or "AMD" in signature
+            or "RADEON" in signature
+            or "ATI" in signature
+        ):
+            matched.append("h264_amf")
+
+    return tuple(
+        candidate for candidate in _HW_ENCODER_CANDIDATES if candidate in matched
+    )
+
+
+def _encoder_codec_args(
+    encoder: str, bitrate_kbps: int, maxrate: int, bufsize: int
+) -> list[str]:
+    if encoder == "h264_nvenc":
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-tune",
+            "hq",
+            "-rc",
+            "vbr",
+            "-b:v",
+            f"{bitrate_kbps}k",
+            "-maxrate",
+            f"{maxrate}k",
+            "-bufsize",
+            f"{bufsize}k",
+            "-pix_fmt",
+            "nv12",
+        ]
+    if encoder == "h264_qsv":
+        return [
+            "-c:v",
+            "h264_qsv",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            f"{bitrate_kbps}k",
+            "-maxrate",
+            f"{maxrate}k",
+            "-bufsize",
+            f"{bufsize}k",
+            "-pix_fmt",
+            "nv12",
+        ]
+    if encoder == "h264_amf":
+        return [
+            "-c:v",
+            "h264_amf",
+            "-usage",
+            "transcoding",
+            "-quality",
+            "speed",
+            "-rc",
+            "vbr_peak",
+            "-b:v",
+            f"{bitrate_kbps}k",
+            "-maxrate",
+            f"{maxrate}k",
+            "-bufsize",
+            f"{bufsize}k",
+            "-pix_fmt",
+            "nv12",
+        ]
+    return [
+        "-c:v",
+        DEFAULT_VIDEO_ENCODER,
+        "-preset",
+        "veryfast",
+        "-threads",
+        str(_x264_thread_count()),
+        "-b:v",
+        f"{bitrate_kbps}k",
+        "-maxrate",
+        f"{maxrate}k",
+        "-bufsize",
+        f"{bufsize}k",
+        "-pix_fmt",
+        "yuv420p",
+    ]
+
+
+@lru_cache(maxsize=4)
+def _detect_hardware_encoder(ffmpeg: Path) -> str | None:
+    """探测当前环境可用的硬件 H.264 编码器，失败时返回 ``None``。"""
+
+    candidates = _display_adapter_candidates()
+    if not candidates:
+        return None
+    for encoder in candidates:
+        codec_args = _encoder_codec_args(encoder, 4000, 5000, 8000)
+        probe_cmd = [
+            str(ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=128x128:d=0.04",
+            "-frames:v",
+            "1",
+            *codec_args,
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            completed = subprocess.run(
+                probe_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                creationflags=creation_flags(),
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if completed.returncode == 0:
+            LOGGER.info("启用硬件视频编码器：%s", encoder)
+            return encoder
+    return None
+
+
+def select_video_encoder(ffmpeg: Path, width: int, height: int) -> str:
+    """为当前录制分辨率选择最省 CPU 的 H.264 编码器。"""
+
+    override = os.environ.get("QUICKREC_VIDEO_ENCODER", "").strip().lower()
+    if override in _VALID_VIDEO_ENCODERS:
+        return override
+    if width < _MIN_HW_ENCODER_SIZE or height < _MIN_HW_ENCODER_SIZE:
+        return DEFAULT_VIDEO_ENCODER
+    return _detect_hardware_encoder(ffmpeg) or DEFAULT_VIDEO_ENCODER
+
+
 def build_video_encode_command(
     ffmpeg: Path,
     output_path: Path,
@@ -74,11 +272,15 @@ def build_video_encode_command(
     height: int,
     fps: int,
     bitrate_kbps: int,
+    *,
+    encoder: str = DEFAULT_VIDEO_ENCODER,
+    input_pix_fmt: str = "bgra",
 ) -> list[str]:
-    """构造从 stdin 接收 BGRA 原始帧、编码为 H.264 MP4 的命令。"""
+    """构造从 stdin 接收 BGRA/BGR0 原始帧、编码为 H.264 MP4 的命令。"""
 
     maxrate = max(bitrate_kbps + 1, int(bitrate_kbps * 1.25))
     bufsize = max(maxrate, bitrate_kbps * 2)
+    codec_args = _encoder_codec_args(encoder, bitrate_kbps, maxrate, bufsize)
     return [
         str(ffmpeg),
         "-hide_banner",
@@ -88,7 +290,7 @@ def build_video_encode_command(
         "-f",
         "rawvideo",
         "-pix_fmt",
-        "bgra",
+        input_pix_fmt,
         "-s",
         f"{width}x{height}",
         "-framerate",
@@ -96,18 +298,11 @@ def build_video_encode_command(
         "-i",
         "pipe:0",
         "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-b:v",
-        f"{bitrate_kbps}k",
-        "-maxrate",
-        f"{maxrate}k",
-        "-bufsize",
-        f"{bufsize}k",
-        "-pix_fmt",
-        "yuv420p",
+        "-filter_threads",
+        str(_filter_thread_count()),
+        "-sws_flags",
+        "fast_bilinear",
+        *codec_args,
         "-movflags",
         "+faststart",
         str(output_path),
@@ -125,12 +320,31 @@ class FFmpegVideoSink:
         fps: int,
         bitrate_kbps: int,
     ) -> None:
+        self._output_path = output_path
         self._width = width
         self._height = height
+        self._fps = fps
+        self._bitrate_kbps = bitrate_kbps
         self._closed = False
+        self._frames_written = 0
+        self._fallback_attempted = False
         self._stderr: deque[str] = deque(maxlen=80)
+        self._ffmpeg = find_ffmpeg()
+        self._encoder = select_video_encoder(self._ffmpeg, width, height)
+        self._start_process(self._encoder)
+
+    def _start_process(self, encoder: str) -> None:
+        self._encoder = encoder
+        self._stderr.clear()
         command = build_video_encode_command(
-            find_ffmpeg(), output_path, width, height, fps, bitrate_kbps
+            self._ffmpeg,
+            self._output_path,
+            self._width,
+            self._height,
+            self._fps,
+            self._bitrate_kbps,
+            encoder=encoder,
+            input_pix_fmt="bgr0",
         )
         try:
             self._process = subprocess.Popen(
@@ -138,6 +352,7 @@ class FFmpegVideoSink:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                bufsize=_PIPE_BUFFER_BYTES,
                 creationflags=creation_flags(),
             )
         except OSError as exc:
@@ -152,6 +367,23 @@ class FFmpegVideoSink:
             target=self._read_stderr, name="ffmpeg-stderr", daemon=True
         )
         self._reader.start()
+
+    def _restart_with_software_encoder(self) -> None:
+        self._fallback_attempted = True
+        LOGGER.warning("硬件编码器 %s 写入首帧失败，回退到 libx264", self._encoder)
+        try:
+            if self._process.stdin is not None:
+                self._process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        if self._process.poll() is None:
+            self._process.kill()
+        try:
+            self._process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        self._reader.join(timeout=1)
+        self._start_process(DEFAULT_VIDEO_ENCODER)
 
     def _read_stderr(self) -> None:
         stream = self._process.stderr
@@ -188,9 +420,25 @@ class FFmpegVideoSink:
                     tr("视频编码器管道不可用。", "The video encoder pipe is unavailable.")
                 )
             )
+        contiguous = frame if frame.flags.c_contiguous else np.ascontiguousarray(frame)
+        payload = memoryview(contiguous.ravel())
         try:
-            stream.write(frame.tobytes())
+            stream.write(payload)
         except (BrokenPipeError, OSError) as exc:
+            if (
+                self._frames_written == 0
+                and self._encoder != DEFAULT_VIDEO_ENCODER
+                and not self._fallback_attempted
+            ):
+                self._restart_with_software_encoder()
+                retry_stream = self._process.stdin
+                if retry_stream is not None:
+                    try:
+                        retry_stream.write(payload)
+                        self._frames_written += 1
+                        return
+                    except (BrokenPipeError, OSError):
+                        pass
             raise FFmpegError(
                 self._diagnostic(
                     tr(
@@ -199,6 +447,7 @@ class FFmpegVideoSink:
                     )
                 )
             ) from exc
+        self._frames_written += 1
 
     def close(self) -> None:
         if self._closed:

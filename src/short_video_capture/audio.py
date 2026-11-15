@@ -290,10 +290,10 @@ class AudioRecorder:
                         if data is None or len(data) == 0:
                             continue
                         frames = self._normalize_frames(data)
-                        pcm = np.clip(frames * SOURCE_GAIN, -1.0, 1.0)
-                        wav_file.writeframes(
-                            (pcm * 32767.0).astype(np.int16).tobytes()
-                        )
+                        pcm = np.clip(
+                            frames * (SOURCE_GAIN * 32767.0), -32767.0, 32767.0
+                        ).astype(np.int16)
+                        wav_file.writeframes(memoryview(pcm.ravel()))
                         frames_written += len(frames)
         except Exception as exc:
             if not self._stop.is_set():

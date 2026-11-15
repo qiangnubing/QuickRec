@@ -38,6 +38,7 @@ class CountdownOverlay:
         self._stopping = False
         self._closed = False
         self._timer_width = 10 if self._max_mode else 8
+        self._last_timer_text: str | None = None
 
         self.window = tk.Toplevel(root)
         self.window.withdraw()
@@ -131,6 +132,9 @@ class CountdownOverlay:
         self.window.geometry(f"{width}x{height}{x:+d}{y:+d}")
 
     def _set_timer_text(self, text: str) -> None:
+        if text == self._last_timer_text:
+            return
+        self._last_timer_text = text
         # MAX 超过一小时后文本会变长，按需加宽并重新贴边，避免被截断。
         needed = max(self._timer_width, len(text))
         if needed != self._timer_width:

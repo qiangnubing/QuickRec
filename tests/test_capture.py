@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import threading
@@ -16,8 +17,10 @@ from short_video_capture.capture import (
     CaptureRegion,
     RecordingError,
     VideoSettings,
+    _Win32GdiSource,
     record_video,
 )
+from short_video_capture.cursor import CursorRenderer
 
 
 class FakeSource:
@@ -178,6 +181,91 @@ class RecordVideoTests(unittest.TestCase):
         self.assertIsNotNone(renderer)
         self.assertEqual(renderer.draw_calls, result.frame_count)
         self.assertTrue(renderer.closed)
+
+    def test_patch_cursor_renderer_restores_clean_frame(self) -> None:
+        captured_backgrounds: list[np.ndarray] = []
+
+        class ReusableSource:
+            def __init__(self, region: CaptureRegion) -> None:
+                self.frame = np.zeros((region.height, region.width, 4), dtype=np.uint8)
+                self.frame[:, :, 1] = 42
+
+            def grab(self) -> np.ndarray:
+                captured_backgrounds.append(self.frame.copy())
+                return self.frame
+
+            def close(self) -> None:
+                pass
+
+        class FakePatchCursorRenderer:
+            instance = None
+
+            def __init__(self) -> None:
+                self.draw_calls = 0
+                self.restore_calls = 0
+                self.closed = False
+                FakePatchCursorRenderer.instance = self
+
+            def draw_patch(
+                self, frame: np.ndarray, region: CaptureRegion
+            ) -> tuple[int, int, int, int]:
+                self.draw_calls += 1
+                self.saved = frame[0:4, 0:4].copy()
+                frame[0:4, 0:4, 0] = 99
+                return (0, 4, 0, 4)
+
+            def restore_patch(
+                self, frame: np.ndarray, patch: tuple[int, int, int, int] | None
+            ) -> None:
+                self.restore_calls += 1
+                if patch is not None:
+                    frame[0:4, 0:4] = self.saved
+
+            def close(self) -> None:
+                self.closed = True
+
+        output = self.directory / "patch_cursor.mp4"
+        with patch(
+            "short_video_capture.capture.CursorRenderer", FakePatchCursorRenderer
+        ):
+            result = record_video(
+                CaptureRegion(0, 0, 64, 64),
+                output,
+                duration_seconds=0.1,
+                settings=VideoSettings(20, 2_000),
+                source_factory=ReusableSource,
+                sink_factory=FakeSink,
+                include_cursor=True,
+            )
+        renderer = FakePatchCursorRenderer.instance
+        self.assertIsNotNone(renderer)
+        self.assertEqual(renderer.draw_calls, result.frame_count)
+        self.assertEqual(renderer.restore_calls, result.frame_count)
+        self.assertTrue(renderer.closed)
+        sink_frames = FakeSink.instances[-1].frames
+        self.assertEqual(len(sink_frames), result.frame_count)
+        self.assertEqual(int(sink_frames[0][0, 0, 0]), 99)
+        self.assertTrue(all(int(bg[0, 0, 0]) == 0 for bg in captured_backgrounds))
+
+    @unittest.skipUnless(os.name == "nt", "仅 Windows")
+    def test_win32_gdi_source_and_cursor_patch(self) -> None:
+        region = CaptureRegion(0, 0, 128, 128)
+        source = _Win32GdiSource(region)
+        try:
+            frame = source.grab()
+            self.assertEqual(frame.shape, (128, 128, 4))
+            self.assertEqual(frame.dtype, np.uint8)
+            self.assertTrue(frame.flags.c_contiguous)
+            snapshot = frame.copy()
+            renderer = CursorRenderer()
+            try:
+                patch_rect = renderer.draw_patch(frame, region)
+                renderer.restore_patch(frame, patch_rect)
+            finally:
+                renderer.close()
+            self.assertTrue(np.array_equal(frame, snapshot))
+        finally:
+            source.close()
 
     def test_high_fps_does_not_freeze_at_end(self) -> None:
         def source_factory(region: CaptureRegion) -> FakeSource:

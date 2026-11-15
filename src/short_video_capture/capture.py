@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import math
+import os
 import threading
 import time
 from collections.abc import Callable
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -15,7 +18,7 @@ import mss
 import numpy as np
 
 from .config import MAX_DURATION
-from .cursor import CursorRenderer
+from .cursor import BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, CursorRenderer
 from .i18n import tr
 from .media import FFmpegVideoSink
 
@@ -141,6 +144,149 @@ class VideoCaptureResult:
         return self.frame_count / self.fps
 
 
+_SRCCOPY = 0x00CC0020
+_CAPTUREBLT = 0x40000000
+
+
+class _Win32GdiSource:
+    """复用单个 DIBSection，通过 BitBlt 零分配抓取屏幕区域。"""
+
+    def __init__(self, region: CaptureRegion) -> None:
+        region = region.even_sized()
+        self._left = region.left
+        self._top = region.top
+        self._width = region.width
+        self._height = region.height
+        self._closed = False
+        self._has_frame = False
+        self._warned_transient = False
+
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        self._setup_api()
+
+        self._screen_dc = self._user32.GetDC(None)
+        if not self._screen_dc:
+            raise OSError("无法获取屏幕 DC。")
+        self._memory_dc = self._gdi32.CreateCompatibleDC(self._screen_dc)
+        if not self._memory_dc:
+            self._user32.ReleaseDC(None, self._screen_dc)
+            self._screen_dc = None
+            raise OSError("无法创建兼容内存 DC。")
+
+        info = BITMAPINFO()
+        info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        info.bmiHeader.biWidth = self._width
+        info.bmiHeader.biHeight = -self._height
+        info.bmiHeader.biPlanes = 1
+        info.bmiHeader.biBitCount = 32
+        info.bmiHeader.biCompression = BI_RGB
+        bits = ctypes.c_void_p()
+        self._dib = self._gdi32.CreateDIBSection(
+            self._memory_dc,
+            ctypes.byref(info),
+            DIB_RGB_COLORS,
+            ctypes.byref(bits),
+            None,
+            0,
+        )
+        if not self._dib or not bits:
+            self._gdi32.DeleteDC(self._memory_dc)
+            self._user32.ReleaseDC(None, self._screen_dc)
+            self._memory_dc = None
+            self._screen_dc = None
+            raise OSError("无法创建屏幕采集缓冲区。")
+        self._old_bitmap = self._gdi32.SelectObject(self._memory_dc, self._dib)
+        buffer_type = ctypes.c_ubyte * (self._width * self._height * 4)
+        self._buffer = buffer_type.from_address(bits.value)
+        self._array = np.ctypeslib.as_array(self._buffer).reshape(
+            self._height, self._width, 4
+        )
+
+    def _setup_api(self) -> None:
+        user32 = self._user32
+        gdi32 = self._gdi32
+        user32.GetDC.argtypes = [wintypes.HWND]
+        user32.GetDC.restype = wintypes.HDC
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        user32.ReleaseDC.restype = ctypes.c_int
+        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        gdi32.CreateCompatibleDC.restype = wintypes.HDC
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        gdi32.DeleteDC.restype = wintypes.BOOL
+        gdi32.CreateDIBSection.argtypes = [
+            wintypes.HDC,
+            ctypes.POINTER(BITMAPINFO),
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p),
+            wintypes.HANDLE,
+            wintypes.DWORD,
+        ]
+        gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        gdi32.SelectObject.restype = wintypes.HGDIOBJ
+        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi32.DeleteObject.restype = wintypes.BOOL
+        gdi32.BitBlt.argtypes = [
+            wintypes.HDC,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.HDC,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.DWORD,
+        ]
+        gdi32.BitBlt.restype = wintypes.BOOL
+
+    def grab(self) -> np.ndarray:
+        ok = self._gdi32.BitBlt(
+            self._memory_dc,
+            0,
+            0,
+            self._width,
+            self._height,
+            self._screen_dc,
+            self._left,
+            self._top,
+            _SRCCOPY | _CAPTUREBLT,
+        )
+        if not ok:
+            error = ctypes.get_last_error()
+            if not self._has_frame:
+                raise RecordingError(
+                    tr(
+                        "屏幕采集失败（错误码 {code}）。",
+                        "Screen capture failed (error {code}).",
+                        code=error,
+                    )
+                )
+            if not self._warned_transient:
+                self._warned_transient = True
+                LOGGER.warning("屏幕采集暂时返回错误码 %s，沿用上一帧", error)
+            return self._array
+        self._has_frame = True
+        return self._array
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if getattr(self, "_old_bitmap", None) and self._memory_dc:
+            self._gdi32.SelectObject(self._memory_dc, self._old_bitmap)
+            self._old_bitmap = None
+        if getattr(self, "_dib", None):
+            self._gdi32.DeleteObject(self._dib)
+            self._dib = None
+        if getattr(self, "_memory_dc", None):
+            self._gdi32.DeleteDC(self._memory_dc)
+            self._memory_dc = None
+        if getattr(self, "_screen_dc", None):
+            self._user32.ReleaseDC(None, self._screen_dc)
+            self._screen_dc = None
+
+
 class _MssSource:
     def __init__(self, region: CaptureRegion) -> None:
         self._screen = mss.MSS()
@@ -151,6 +297,15 @@ class _MssSource:
 
     def close(self) -> None:
         self._screen.close()
+
+
+def _default_source(region: CaptureRegion) -> ScreenSource:
+    if os.name == "nt":
+        try:
+            return _Win32GdiSource(region)
+        except OSError as exc:
+            LOGGER.warning("GDI 屏幕采集初始化失败，回退到 mss：%s", exc)
+    return _MssSource(region)
 
 
 SourceFactory = Callable[[CaptureRegion], ScreenSource]
@@ -213,7 +368,7 @@ def record_video(
             )
         ) from exc
 
-    source_factory = source_factory or _MssSource
+    source_factory = source_factory or _default_source
     sink_factory = sink_factory or _open_ffmpeg_sink
     total_frames = (
         None
@@ -252,11 +407,34 @@ def record_video(
                     )
                 ) from exc
 
+        supports_patch_cursor = (
+            cursor_renderer is not None
+            and hasattr(cursor_renderer, "draw_patch")
+            and hasattr(cursor_renderer, "restore_patch")
+        )
+
         def emit(frame: np.ndarray) -> None:
             nonlocal cursor_renderer
             if cursor_renderer is None:
                 sink.write(frame)
                 return
+            if supports_patch_cursor:
+                patch: tuple[int, int, int, int] | None = None
+                try:
+                    patch = cursor_renderer.draw_patch(frame, region)
+                except Exception:
+                    LOGGER.exception("绘制鼠标指针失败，本次录制将不再绘制鼠标")
+                    cursor_renderer.close()
+                    cursor_renderer = None
+                    sink.write(frame)
+                    return
+                try:
+                    sink.write(frame)
+                finally:
+                    if cursor_renderer is not None and patch is not None:
+                        cursor_renderer.restore_patch(frame, patch)
+                return
+
             output = frame.copy()
             try:
                 cursor_renderer.draw(output, region)
@@ -287,9 +465,9 @@ def record_video(
                 if deadline is not None:
                     wait_seconds = min(wait_seconds, deadline - now)
                 if stop_event is not None:
-                    if stop_event.wait(wait_seconds):
-                        stopped_early = True
-                        break
+                    # Windows 上 Event.wait 会对齐到 15.6ms 系统时钟周期；
+                    # Python 3.12 的 time.sleep 使用高精度等待计时器，分片上限 50ms 兼顾精度与响应。
+                    time.sleep(min(wait_seconds, 0.05))
                 else:
                     time.sleep(wait_seconds)
                 continue
@@ -311,7 +489,11 @@ def record_video(
                             "Captured frame format is invalid (BGRA required).",
                         )
                     )
-                background = np.ascontiguousarray(grabbed)
+                background = (
+                    grabbed
+                    if grabbed.flags.c_contiguous
+                    else np.ascontiguousarray(grabbed)
+                )
 
             emit(background)
             frame_count += 1
