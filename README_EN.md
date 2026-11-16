@@ -125,6 +125,9 @@ Packaging notes:
 
 ## Usage
 
+> [!IMPORTANT]
+> It is strongly recommended to run this software with administrator privileges. Otherwise, the software will be unable to minimize to the system tray or use the system's default video save path.
+
 1. Choose a recording duration: click the `10s` / `20s` / `40s` / `60s` preset buttons, click `MAX` for unlimited duration, or enter seconds in the **Custom** input box.
 2. Configure **Video & audio**:
    - Adjust **FPS** (5–60), **Video bitrate** (Mbps), and **Audio bitrate** (kbps).
