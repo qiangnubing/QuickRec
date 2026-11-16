@@ -67,11 +67,16 @@ quickrec
 
 ## Packaging as an Executable (.exe)
 
-Requires 64-bit Python 3.12 and a virtual environment with all dependencies installed. The repository includes both one-file and one-directory PyInstaller specs and a unified build script:
+Requires 64-bit Python 3.12+. If you do not have a `.venv` virtual environment yet, create one in the project root and install the project dependencies along with `pyinstaller`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install pyinstaller
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e . pyinstaller
 ```
+
+(If you already have a `.venv` with the project dependencies installed, simply ensure `pyinstaller` is installed: `.\.venv\Scripts\python.exe -m pip install pyinstaller`.)
+
+The repository includes both one-file and one-directory PyInstaller specs and a unified build script:
 
 Directory mode (recommended—faster startup, no runtime unpacking on every launch):
 

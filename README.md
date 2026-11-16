@@ -67,11 +67,16 @@ quickrec
 
 ## 打包为 exe
 
-需要 64 位 Python 3.12 和已装好依赖的虚拟环境。项目包含单文件、目录两种 PyInstaller 配置和统一构建脚本：
+需要 64 位 Python 3.12+。如果本地还没有 `.venv` 虚拟环境，先在项目根目录创建虚拟环境并安装项目依赖与 `pyinstaller`：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install pyinstaller
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e . pyinstaller
 ```
+
+（若已存在安装好项目依赖的 `.venv`，只需确保安装了 `pyinstaller`：`.\.venv\Scripts\python.exe -m pip install pyinstaller`。）
+
+项目包含单文件、目录两种 PyInstaller 配置和统一构建脚本：
 
 目录模式（推荐，启动快，不需要每次解压依赖）：
 
