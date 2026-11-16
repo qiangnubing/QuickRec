@@ -1,13 +1,37 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "quickrec"
 version = "1.3.1"
-description = "QuickRec — Windows 屏幕区域录制工具，支持 60 秒/MAX、中英文界面、画质与系统音频"
+description = "QuickRec — Windows screen region recorder with 60s/MAX presets, bilingual UI, quality control, and system/microphone audio"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [
+    { name = "LYU TONG", email = "1098220238@qq.com" },
+]
+keywords = [
+    "screen-recorder",
+    "screen-capture",
+    "windows",
+    "wasapi",
+    "ffmpeg",
+    "tkinter",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video :: Capture",
+]
 dependencies = [
     "mss>=10.0",
     "numpy>=1.26",

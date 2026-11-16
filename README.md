@@ -1,5 +1,7 @@
 # QuickRec
 
+**中文** | [English](README_EN.md)
+
 Windows 桌面屏幕区域录制工具。框选屏幕任意区域，按 10 / 20 / 40 / 60 秒或 MAX 录制，支持自定义时长、画质、系统声音与麦克风，并提供中文 / English 界面。
 
 ![QuickRec 主界面](docs/screenshot-main-zh.png)
