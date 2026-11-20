@@ -8,8 +8,8 @@ A Windows desktop screen region recording tool. Drag to select any region of you
 
 ## Features
 
-- Compact modern rounded UI: The main window, post-selection action toolbar, and bottom-right countdown overlay all use pure Tkinter + NumPy anti-aliased rounded widgets for a cohesive look without extra UI library dependencies.
-- Full-screen drag-to-select recording region with multi-monitor and high-DPI support.
+- Compact modern rounded UI: The main window, post-selection action toolbar, bottom-right countdown overlay, and modal dialogs all use pure Tkinter + NumPy anti-aliased rounded widgets for a cohesive look without extra UI library dependencies.
+- Full-screen drag-to-select recording region with full high-DPI and extended multi-monitor support (including negative-coordinate secondary displays placed above or left of the primary display), showing hints on every monitor and keeping the confirmation toolbar on the selected display.
 - Duration presets: 10 / 20 / 40 / 60 seconds; `MAX` records without a time limit until you click stop.
 - You can also enter any integer between 1 and 3600 seconds (up to 1 hour) in **Custom**.
 - Interface language: 中文 / English; switching rebuilds the UI immediately and saves your choice.
@@ -20,10 +20,10 @@ A Windows desktop screen region recording tool. Drag to select any region of you
 - Performance optimization & low CPU usage: Uses Win32 GDI shared memory (`DIBSection`) zero-copy screen capture, localized cursor patching (avoiding full-frame copies on every frame), efficient pipe buffering, and high-precision timing to greatly reduce CPU usage during recording.
 - Customizable save location, defaulting to the Windows **Videos** folder; if that folder is not writable, QuickRec automatically switches to an `output` folder in the application directory on startup and shows a notice in the bottom hint line.
 - Folder selection uses a built-in pure-Tk directory picker instead of Windows Shell dialogs, preventing hangs in restricted environments.
-- After recording starts, the main window automatically hides to the system tray and a countdown overlay appears in the bottom-right corner with a **Stop** button to finish and save at any time.
+- After recording starts, the main window automatically hides to the system tray and a countdown overlay appears in the bottom-right corner of the target monitor with a **Stop** button to finish and save at any time.
 - Clicking the minimize button in the top-right corner also hides the window to the system tray; you can restore the main window from the tray menu.
 - The countdown overlay enables capture exclusion (Windows 10 2004+) so it does not appear in the recorded video whenever supported.
-- When recording finishes, the main window automatically reappears, showing the file name, duration, file size, video quality, and audio info, along with a button to open the containing folder.
+- When recording finishes, the main window automatically reappears with a pure-Tk modal dialog centered over the main window, showing the file name, duration, file size, video quality, and audio info, along with a button to open the containing folder.
 - Automatically avoids duplicate file name collisions; remembers your last used duration, quality settings, audio devices, language, and save location.
 - Runs 100% locally—no network connection and no data uploaded.
 
@@ -143,10 +143,10 @@ Packaging notes:
    - Click **Refresh devices** to re-enumerate devices after hardware changes.
 3. Verify the **Save location**, or click **Browse...** to choose another folder.
 4. Click **Start recording**.
-5. Once the screen dims, hold the left mouse button and drag to select the recording area; release to finish or drag again to reselect.
+5. Once the screen dims, hold the left mouse button and drag to select the recording area; release to show the confirmation toolbar on that monitor, or reselect if needed.
 6. Click **Start recording** or press `Enter` to begin; press `Esc` or right-click to cancel.
-7. During recording, the main window hides to the system tray and a countdown appears in the bottom-right corner (`MAX` mode displays elapsed recording time).
-8. Recording stops automatically when time runs out; you can also click **Stop** on the countdown overlay or right-click the tray icon and choose **Stop and save**. The main window will reappear with a **Recording complete** summary.
+7. During recording, the main window hides to the system tray and a countdown appears in the bottom-right corner of the recorded monitor (`MAX` mode displays elapsed recording time).
+8. Recording stops automatically when time runs out; you can also click **Stop** on the countdown overlay or right-click the tray icon and choose **Stop and save**. The main window will reappear with a **Recording complete** dialog centered over it.
 
 Region selection shortcuts:
 
@@ -202,13 +202,14 @@ Minimizing the window:
 │   ├── config.py                     # Settings & input validation
 │   ├── i18n.py                       # Bilingual UI copy (Chinese / English)
 │   ├── directory_picker.py           # Pure-Tk folder picker
-│   ├── countdown.py                  # Bottom-right countdown & stop overlay
+│   ├── dialogs.py                    # Parent-centered pure-Tk modal dialogs
+│   ├── countdown.py                  # Target-monitor bottom-right countdown overlay
 │   ├── cursor.py                     # Frame-by-frame mouse cursor compositing
 │   ├── paths.py                      # Default directories, filenames, open folder
-│   ├── region_selector.py            # Full-screen region selection & toolbar
+│   ├── region_selector.py            # Multi-monitor region selection & toolbar
 │   ├── tray.py                       # Win32 system tray integration
 │   ├── widgets.py                    # Pure-Tk + NumPy anti-aliased rounded widgets
-│   └── win32.py                      # DPI, screen bounds, capture exclusion
+│   └── win32.py                      # DPI, monitor work areas, window bounds, capture exclusion
 ├── tests/                            # unittest automated test suite
 ├── docs/screenshot-main-zh.png       # Chinese UI screenshot
 ├── docs/screenshot-main-en.png       # English UI screenshot
@@ -221,6 +222,6 @@ Minimizing the window:
 python -m unittest discover -s tests -v
 ```
 
-Test coverage includes frame-by-frame recording scheduling, high-FPS frame padding, `MAX` unlimited recording stop, Win32 GDI capture and localized cursor patching, hardware encoder probing and small-region fallback, automatic fallback to `libx264` on first-frame pipe errors, frame-by-frame cursor compositing, stop and cancel behavior, FPS/bitrate/duration validation, audio/video muxing commands, audio device name deduplication, region normalization, output filename deduplication, write-permission probing, the Tk directory picker, paths with Chinese characters or spaces, settings persistence and corrupted-config fallback, anti-aliased rounded widget and indicator rendering, and bilingual copy & language fallback.
+Test coverage includes frame-by-frame recording scheduling, high-FPS frame padding, `MAX` unlimited recording stop, Win32 GDI capture and localized cursor patching, hardware encoder probing and small-region fallback, automatic fallback to `libx264` on first-frame pipe errors, frame-by-frame cursor compositing, stop and cancel behavior, FPS/bitrate/duration validation, audio/video muxing commands, audio device name deduplication, multi-monitor virtual screen and negative-coordinate mapping, cross-monitor action bar and countdown placement, parent-centered modal dialogs, region normalization, output filename deduplication, write-permission probing, the Tk directory picker, paths with Chinese characters or spaces, settings persistence and corrupted-config fallback, anti-aliased rounded widget and indicator rendering, and bilingual copy & language fallback.
 
 The UI and real recordings have been manually verified on Windows: launching the main window, switching between Chinese and English, region selection, 60s and `MAX` presets, the countdown stop button, custom duration, H.264 video, cursor rendering, system audio + microphone mixing, early stop, cancellation, completion dialog, minimize-to-tray behavior, restricted-directory fallback, built-in folder picker, and MP4 playback.

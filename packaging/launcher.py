@@ -54,6 +54,7 @@ def _imports() -> dict[str, object]:
     import short_video_capture.app  # noqa: F401
     import short_video_capture.audio  # noqa: F401
     import short_video_capture.capture  # noqa: F401
+    import short_video_capture.dialogs  # noqa: F401
     import short_video_capture.media  # noqa: F401
     import short_video_capture.pipeline  # noqa: F401
     import short_video_capture.region_selector  # noqa: F401

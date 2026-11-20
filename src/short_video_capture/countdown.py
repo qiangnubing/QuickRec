@@ -10,9 +10,11 @@ from tkinter import font as tkfont
 from .i18n import tr
 from .widgets import RoundedButton, RoundedCard, render_dot_png
 from .win32 import (
+    ScreenRect,
     exclude_from_capture,
     make_overlay_window,
     primary_work_area,
+    tk_geometry,
 )
 
 _TRANSPARENT_KEY = "#010203"
@@ -25,19 +27,36 @@ _ACCENT_ACTIVE = "#D63726"
 _DOT_DIM = "#7F1D1D"
 
 
+def compute_bottom_right_position(
+    area: ScreenRect,
+    width: int,
+    height: int,
+    *,
+    margin: int = 24,
+) -> tuple[int, int]:
+    """计算倒计时浮层在指定工作区右下角的屏幕坐标。"""
+
+    x = max(area.left + margin, area.right - width - margin)
+    y = max(area.top + margin, area.bottom - height - margin)
+    return x, y
+
+
 class CountdownOverlay:
-    """置顶、无边框、圆角抗锯齿的倒计时浮层，录制时显示在屏幕右下角。"""
+    """置顶、无边框、圆角抗锯齿的倒计时浮层，录制时显示在目标屏幕右下角。"""
 
     def __init__(
         self,
         root: tk.Misc,
         total_seconds: int | None,
         on_stop: Callable[[], None] | None = None,
+        *,
+        work_area: ScreenRect | None = None,
     ) -> None:
         self._root = root
         self._total_seconds = total_seconds
         self._max_mode = total_seconds is None
         self._on_stop = on_stop
+        self._work_area = work_area
         self._blink_job: str | None = None
         self._dot_visible = True
         self._stopping = False
@@ -155,9 +174,9 @@ class CountdownOverlay:
         return max(1, round(px * self._dpi_scale))
 
     def show(self) -> None:
-        self.window.deiconify()
         self.window.update_idletasks()
         self._place_bottom_right()
+        self.window.deiconify()
         self.window.lift()
         self.window.update_idletasks()
         exclude_from_capture(self.window)
@@ -165,13 +184,11 @@ class CountdownOverlay:
         self._schedule_blink()
 
     def _place_bottom_right(self) -> None:
-        area = primary_work_area()
+        area = self._work_area or primary_work_area()
         width = self.window.winfo_reqwidth()
         height = self.window.winfo_reqheight()
-        margin = 24
-        x = area.right - width - margin
-        y = area.bottom - height - margin
-        self.window.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        x, y = compute_bottom_right_position(area, width, height, margin=24)
+        self.window.geometry(tk_geometry(width, height, x, y))
 
     def _set_timer_text(self, text: str) -> None:
         if text == self._last_timer_text:

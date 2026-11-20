@@ -14,6 +14,7 @@ SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
 SPI_GETWORKAREA = 0x0030
+MONITOR_DEFAULTTONEAREST = 2
 
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
@@ -52,6 +53,52 @@ class RECT(ctypes.Structure):
         ("right", wintypes.LONG),
         ("bottom", wintypes.LONG),
     ]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+_MONITORENUMPROC = ctypes.WINFUNCTYPE(
+    wintypes.BOOL,
+    wintypes.HMONITOR,
+    wintypes.HDC,
+    ctypes.POINTER(RECT),
+    wintypes.LPARAM,
+)
+
+
+def tk_geometry(width: int, height: int, x: int, y: int) -> str:
+    """构造 Tk ``wm geometry`` 字符串。
+
+    Tk 中 ``-X`` 表示距主屏右/下边缘的距离而非负坐标；只有 ``+-X`` 才表示
+    真正的负屏幕坐标（如扩展屏位于主屏左侧或上方），因此这里固定使用 ``+``。
+    """
+
+    return f"{int(width)}x{int(height)}+{int(x)}+{int(y)}"
+
+
+def center_position(
+    parent_rect: ScreenRect,
+    child_width: int,
+    child_height: int,
+    work_area: ScreenRect | None = None,
+) -> tuple[int, int]:
+    """计算子窗口相对父窗口居中的左上角坐标，并可选限制在工作区内。"""
+
+    x = parent_rect.left + (parent_rect.width - child_width) // 2
+    y = parent_rect.top + (parent_rect.height - child_height) // 2
+    if work_area is not None:
+        max_x = max(work_area.left, work_area.right - child_width)
+        max_y = max(work_area.top, work_area.bottom - child_height)
+        x = max(work_area.left, min(x, max_x))
+        y = max(work_area.top, min(y, max_y))
+    return x, y
 
 
 def enable_dpi_awareness() -> None:
@@ -104,6 +151,78 @@ def primary_work_area() -> ScreenRect:
     )
 
 
+def monitor_work_area_for_rect(rect: ScreenRect) -> ScreenRect:
+    """返回包含指定矩形面积最大的显示器工作区（不含任务栏）。"""
+
+    try:
+        user32 = ctypes.windll.user32
+        user32.MonitorFromRect.argtypes = [ctypes.POINTER(RECT), wintypes.DWORD]
+        user32.MonitorFromRect.restype = wintypes.HMONITOR
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+        query = RECT(
+            int(rect.left),
+            int(rect.top),
+            int(max(rect.left + 1, rect.right)),
+            int(max(rect.top + 1, rect.bottom)),
+        )
+        monitor = user32.MonitorFromRect(ctypes.byref(query), MONITOR_DEFAULTTONEAREST)
+        if not monitor:
+            return primary_work_area()
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return primary_work_area()
+        work = info.rcWork
+        width = work.right - work.left
+        height = work.bottom - work.top
+        if width <= 0 or height <= 0:
+            return primary_work_area()
+        return ScreenRect(work.left, work.top, width, height)
+    except (AttributeError, OSError):
+        return primary_work_area()
+
+
+def monitor_work_area_for_point(x: int, y: int) -> ScreenRect:
+    """返回指定屏幕坐标所在显示器的工作区（不含任务栏）。"""
+
+    return monitor_work_area_for_rect(ScreenRect(int(x), int(y), 1, 1))
+
+
+def display_monitors() -> list[ScreenRect]:
+    """枚举当前所有活动显示器的屏幕矩形；失败时回退到整个虚拟桌面。"""
+
+    monitors: list[ScreenRect] = []
+    try:
+        user32 = ctypes.windll.user32
+        user32.EnumDisplayMonitors.argtypes = [
+            wintypes.HDC,
+            ctypes.POINTER(RECT),
+            _MONITORENUMPROC,
+            wintypes.LPARAM,
+        ]
+        user32.EnumDisplayMonitors.restype = wintypes.BOOL
+
+        def _collect(
+            _hmon: int, _hdc: int, lprect: object, _lparam: int
+        ) -> bool:
+            rect = lprect.contents  # type: ignore[attr-defined]
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width > 0 and height > 0:
+                monitors.append(ScreenRect(rect.left, rect.top, width, height))
+            return True
+
+        callback = _MONITORENUMPROC(_collect)
+        user32.EnumDisplayMonitors(None, None, callback, 0)
+    except (AttributeError, OSError):
+        monitors.clear()
+    if not monitors:
+        return [virtual_screen_rect()]
+    return monitors
+
+
 def _toplevel_hwnd(window: object) -> int:
     hwnd = int(window.winfo_id())  # type: ignore[attr-defined]
     user32 = ctypes.windll.user32
@@ -111,6 +230,57 @@ def _toplevel_hwnd(window: object) -> int:
     user32.GetParent.restype = wintypes.HWND
     parent = user32.GetParent(hwnd)
     return int(parent or hwnd)
+
+
+def window_rect(window: object) -> ScreenRect | None:
+    """返回 Tk 顶层窗口的外框物理屏幕矩形。"""
+
+    try:
+        hwnd = _toplevel_hwnd(window)
+        user32 = ctypes.windll.user32
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        rect = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            return None
+        return ScreenRect(rect.left, rect.top, width, height)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def set_window_bounds(window: object, rect: ScreenRect) -> bool:
+    """用 Win32 SetWindowPos 精确设置顶层窗口的物理坐标和尺寸。"""
+
+    try:
+        hwnd = _toplevel_hwnd(window)
+        user32 = ctypes.windll.user32
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        return bool(
+            user32.SetWindowPos(
+                hwnd,
+                None,
+                int(rect.left),
+                int(rect.top),
+                int(rect.width),
+                int(rect.height),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        )
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def exclude_from_capture(window: object) -> bool:

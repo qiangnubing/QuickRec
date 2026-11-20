@@ -13,6 +13,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import simpledialog, ttk
 
+from .dialogs import center_window_over_parent
 from .i18n import tr
 
 _BG = "#F1F5F9"
@@ -222,18 +223,7 @@ class DirectoryPicker:
         return candidate
 
     def _center_over_parent(self) -> None:
-        try:
-            parent_x = self._parent.winfo_rootx()
-            parent_y = self._parent.winfo_rooty()
-            parent_w = self._parent.winfo_width()
-            parent_h = self._parent.winfo_height()
-        except tk.TclError:
-            return
-        width = 660
-        height = 500
-        x = max(0, parent_x + (parent_w - width) // 2)
-        y = max(0, parent_y + (parent_h - height) // 2)
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
+        center_window_over_parent(self.window, self._parent, width=660, height=500)
 
     def _button(
         self,

@@ -8,7 +8,15 @@ from collections.abc import Callable
 from .capture import CaptureRegion
 from .i18n import tr
 from .widgets import RoundedButton, RoundedCard
-from .win32 import primary_work_area, virtual_screen_rect
+from .win32 import (
+    ScreenRect,
+    display_monitors,
+    monitor_work_area_for_rect,
+    set_window_bounds,
+    tk_geometry,
+    virtual_screen_rect,
+    window_rect,
+)
 
 MIN_SELECTION = 32
 _OVERLAY_BG = "#020617"
@@ -24,6 +32,31 @@ _BTN_PRIMARY_ACTIVE = "#D63726"
 _BTN_SECONDARY = "#1E293B"
 _BTN_SECONDARY_HOVER = "#334155"
 _BTN_SECONDARY_ACTIVE = "#475569"
+
+
+def compute_action_bar_position(
+    selection: ScreenRect,
+    bar_width: int,
+    bar_height: int,
+    area: ScreenRect,
+    *,
+    gap: int = 12,
+    margin: int = 16,
+) -> tuple[int, int]:
+    """计算框选确认操作条的屏幕坐标，使其停留在选区所在显示器工作区内。"""
+
+    selection_center_x = selection.left + selection.width // 2
+    x = selection_center_x - bar_width // 2
+    y = selection.bottom + gap
+    if y + bar_height > area.bottom - margin:
+        y = selection.top - bar_height - gap
+    if y < area.top + margin:
+        y = area.bottom - bar_height - margin
+    max_x = max(area.left + margin, area.right - bar_width - margin)
+    max_y = max(area.top + margin, area.bottom - bar_height - margin)
+    x = max(area.left + margin, min(x, max_x))
+    y = max(area.top + margin, min(y, max_y))
+    return x, y
 
 
 class RegionSelector:
@@ -56,9 +89,14 @@ class RegionSelector:
         self.window.attributes("-topmost", True)
         self.window.attributes("-alpha", 0.45)
         self.window.configure(bg=_OVERLAY_BG)
+        self.window.maxsize(self._virtual.width, self._virtual.height)
         self.window.geometry(
-            f"{self._virtual.width}x{self._virtual.height}"
-            f"{self._virtual.left:+d}{self._virtual.top:+d}"
+            tk_geometry(
+                self._virtual.width,
+                self._virtual.height,
+                self._virtual.left,
+                self._virtual.top,
+            )
         )
 
         self.canvas = tk.Canvas(
@@ -70,27 +108,38 @@ class RegionSelector:
         )
         self.canvas.pack(fill="both", expand=True)
 
-        center_x = self._virtual.width // 2
-        self._title_id = self.canvas.create_text(
-            center_x,
-            42,
-            text=tr("拖动鼠标框选录制区域", "Drag to select a recording area"),
-            fill="#FFFFFF",
-            font=("Microsoft YaHei UI", 18, "bold"),
-            tags="ui",
+        title_text = tr("拖动鼠标框选录制区域", "Drag to select a recording area")
+        self._hint_default = tr(
+            "松开后确认选区　·　Enter 开始录制　·　Esc 取消",
+            "Release to confirm · Enter to start · Esc to cancel",
         )
-        self._hint_id = self.canvas.create_text(
-            center_x,
-            76,
-            text=tr(
-                "松开后确认选区　·　Enter 开始录制　·　Esc 取消",
-                "Release to confirm · Enter to start · Esc to cancel",
-            ),
-            fill=_HINT_COLOR,
-            font=("Microsoft YaHei UI", 10),
-            tags="ui",
-        )
-        self._hint_default = self.canvas.itemcget(self._hint_id, "text")
+        self._title_ids: list[int] = []
+        self._hint_ids: list[int] = []
+        for monitor in display_monitors():
+            center_x = (monitor.left - self._virtual.left) + monitor.width // 2
+            top_y = monitor.top - self._virtual.top
+            self._title_ids.append(
+                self.canvas.create_text(
+                    center_x,
+                    top_y + 42,
+                    text=title_text,
+                    fill="#FFFFFF",
+                    font=("Microsoft YaHei UI", 18, "bold"),
+                    tags=("ui", "title"),
+                )
+            )
+            self._hint_ids.append(
+                self.canvas.create_text(
+                    center_x,
+                    top_y + 76,
+                    text=self._hint_default,
+                    fill=_HINT_COLOR,
+                    font=("Microsoft YaHei UI", 10),
+                    tags=("ui", "hint"),
+                )
+            )
+        self._title_id = self._title_ids[0]
+        self._hint_id = self._hint_ids[0]
 
         self._cross_h = self.canvas.create_line(
             0, -10, self._virtual.width, -10, fill=_ACCENT, dash=(4, 6), tags="cross"
@@ -129,6 +178,11 @@ class RegionSelector:
             self.window.bind(sequence, self._on_key)
 
         self.window.deiconify()
+        self.window.update_idletasks()
+        actual = window_rect(self.window)
+        if actual != self._virtual:
+            set_window_bounds(self.window, self._virtual)
+            self.window.update_idletasks()
         self.window.lift()
         self.window.focus_force()
         self.canvas.focus_set()
@@ -343,31 +397,38 @@ class RegionSelector:
         bar.update_idletasks()
         bar_width = bar.winfo_reqwidth()
         bar_height = bar.winfo_reqheight()
-        area = primary_work_area()
-        selection_center_x = self._virtual.left + left + width // 2
-        selection_center_y = self._virtual.top + top + height // 2
-        if not (
-            area.left <= selection_center_x <= area.right
-            and area.top <= selection_center_y <= area.bottom
-        ):
-            area = self._virtual
-        x = selection_center_x - bar_width // 2
-        y = self._virtual.top + top + height + self._s(12)
-        if y + bar_height > area.bottom - 16:
-            y = self._virtual.top + top - bar_height - self._s(12)
-        if y < area.top + 16:
-            y = area.bottom - bar_height - 16
-        x = max(area.left + 16, min(x, area.right - bar_width - 16))
-        bar.geometry(f"{bar_width}x{bar_height}{x:+d}{y:+d}")
+        selection_rect = self._selection_screen_rect()
+        area = monitor_work_area_for_rect(selection_rect)
+        x, y = compute_action_bar_position(
+            selection_rect,
+            bar_width,
+            bar_height,
+            area,
+            gap=self._s(12),
+            margin=self._s(16),
+        )
+        bar.geometry(tk_geometry(bar_width, bar_height, x, y))
         bar.deiconify()
-        bar.lift()
+        bar.lift(self.window)
         try:
             for sequence in ("<Escape>", "<Return>", "<KP_Enter>"):
                 bar.bind(sequence, self._on_key)
         except tk.TclError:
             pass
         self.window.focus_force()
-        bar.lift()
+        bar.lift(self.window)
+
+    def _canvas_origin(self) -> tuple[int, int]:
+        try:
+            return int(self.canvas.winfo_rootx()), int(self.canvas.winfo_rooty())
+        except tk.TclError:
+            return self._virtual.left, self._virtual.top
+
+    def _selection_screen_rect(self) -> ScreenRect:
+        assert self._selection is not None
+        left, top, width, height = self._selection
+        origin_x, origin_y = self._canvas_origin()
+        return ScreenRect(origin_x + left, origin_y + top, width, height)
 
     def _reset_selection(self) -> None:
         self._dismiss_bar()
@@ -394,7 +455,7 @@ class RegionSelector:
 
     def _set_hint(self, text: str, color: str) -> None:
         try:
-            self.canvas.itemconfigure(self._hint_id, text=text, fill=color)
+            self.canvas.itemconfigure("hint", text=text, fill=color)
         except tk.TclError:
             pass
 
@@ -411,12 +472,12 @@ class RegionSelector:
     def _confirm(self) -> None:
         if self._selection is None or self._closed:
             return
-        left, top, width, height = self._selection
+        selection_rect = self._selection_screen_rect()
         region = CaptureRegion(
-            left=self._virtual.left + left,
-            top=self._virtual.top + top,
-            width=width,
-            height=height,
+            left=selection_rect.left,
+            top=selection_rect.top,
+            width=selection_rect.width,
+            height=selection_rect.height,
         )
         self._close()
         self._on_confirm(region)

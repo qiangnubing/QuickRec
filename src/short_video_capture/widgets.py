@@ -15,6 +15,8 @@ from tkinter import font as tkfont
 
 import numpy as np
 
+from .win32 import monitor_work_area_for_point, tk_geometry
+
 # ------------------------------------------------------------------
 # 纯 NumPy 抗锯齿 PNG 渲染工具
 # ------------------------------------------------------------------
@@ -1073,15 +1075,15 @@ class RoundedDropdown(tk.Canvas):
         req_h = popup.winfo_reqheight()
         root_x = self.winfo_rootx()
         root_y = self.winfo_rooty()
-        screen_h = self.winfo_screenheight()
-        screen_w = self.winfo_screenwidth()
+        area = monitor_work_area_for_point(root_x, root_y)
 
         y = root_y + self.winfo_height() + 3
-        if y + req_h > screen_h - 12:
-            y = max(8, root_y - req_h - 3)
-        x = min(root_x, max(8, screen_w - req_w - 8))
+        if y + req_h > area.bottom - 12:
+            y = max(area.top + 8, root_y - req_h - 3)
+        max_x = max(area.left + 8, area.right - req_w - 8)
+        x = max(area.left + 8, min(root_x, max_x))
 
-        popup.geometry(f"{req_w}x{req_h}+{x}+{y}")
+        popup.geometry(tk_geometry(req_w, req_h, x, y))
         popup.deiconify()
         popup.lift()
         popup.focus_set()

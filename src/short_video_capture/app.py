@@ -11,7 +11,6 @@ import time
 import tkinter as tk
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from tkinter import messagebox
 
 from .audio import (
     AudioDevice,
@@ -39,6 +38,7 @@ from .config import (
     parse_video_bitrate_mbps,
 )
 from .countdown import CountdownOverlay
+from .dialogs import ask_yes_no, show_error
 from .directory_picker import ask_directory
 from .i18n import LANGUAGES, get_language, language_name, set_language, tr
 from .media import FFmpegError, find_ffmpeg
@@ -62,7 +62,13 @@ from .widgets import (
     RoundedEntry,
     load_scaled_icon_png,
 )
-from .win32 import enable_dpi_awareness
+from .win32 import (
+    ScreenRect,
+    enable_dpi_awareness,
+    monitor_work_area_for_rect,
+    primary_work_area,
+    tk_geometry,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -273,12 +279,11 @@ class RecorderApp:
         self.root.update_idletasks()
         width = max(self._s(668), self.root.winfo_reqwidth())
         height = self.root.winfo_reqheight() + self._s(2)
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        height = min(height, max(self._s(480), screen_height - 80))
-        x = max(0, (screen_width - width) // 2)
-        y = max(0, (screen_height - height) // 2)
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        area = primary_work_area()
+        height = min(height, max(self._s(480), area.height - 40))
+        x = area.left + max(0, (area.width - width) // 2)
+        y = area.top + max(0, (area.height - height) // 2)
+        self.root.geometry(tk_geometry(width, height, x, y))
 
     def _build_ui(self) -> None:
         for child in self.root.winfo_children():
@@ -1026,8 +1031,8 @@ class RecorderApp:
             directory = ensure_output_dir(selected)
         except OutputDirectoryError as exc:
             self._set_status(tr("所选文件夹不可写。", "The selected folder is not writable."), _WARN)
-            messagebox.showerror(
-                tr("文件夹不可写", "Folder not writable"), str(exc), parent=self.root
+            show_error(
+                self.root, tr("文件夹不可写", "Folder not writable"), str(exc)
             )
             return
         self.output_var.set(str(directory))
@@ -1044,8 +1049,8 @@ class RecorderApp:
             self._set_status(
                 tr("无法打开保存文件夹。", "Cannot open the save folder."), _WARN
             )
-            messagebox.showerror(
-                tr("无法打开文件夹", "Cannot open folder"), str(exc), parent=self.root
+            show_error(
+                self.root, tr("无法打开文件夹", "Cannot open folder"), str(exc)
             )
 
     def _start_flow(self) -> None:
@@ -1062,9 +1067,7 @@ class RecorderApp:
             find_ffmpeg()
         except (OutputDirectoryError, ValueError, FFmpegError) as exc:
             self._set_status(str(exc), _WARN)
-            messagebox.showerror(
-                tr("设置无效", "Invalid settings"), str(exc), parent=self.root
-            )
+            show_error(self.root, tr("设置无效", "Invalid settings"), str(exc))
             return
 
         audio_selection = self._audio_selection_from_ui()
@@ -1076,7 +1079,8 @@ class RecorderApp:
                 ),
                 _WARN,
             )
-            messagebox.showerror(
+            show_error(
+                self.root,
                 tr("音频设备不可用", "Audio device unavailable"),
                 tr(
                     "系统声音已开启，但没有选择可用设备。\n"
@@ -1084,7 +1088,6 @@ class RecorderApp:
                     "System audio is enabled but no device is selected.\n"
                     "Refresh devices, pick a device, or turn system audio off.",
                 ),
-                parent=self.root,
             )
             return
         if self.microphone_var.get() and not audio_selection.microphone_enabled:
@@ -1095,7 +1098,8 @@ class RecorderApp:
                 ),
                 _WARN,
             )
-            messagebox.showerror(
+            show_error(
+                self.root,
                 tr("音频设备不可用", "Audio device unavailable"),
                 tr(
                     "麦克风已开启，但没有选择可用设备。\n"
@@ -1103,7 +1107,6 @@ class RecorderApp:
                     "The microphone is enabled but no device is selected.\n"
                     "Refresh devices, pick a device, or turn the microphone off.",
                 ),
-                parent=self.root,
             )
             return
 
@@ -1146,14 +1149,14 @@ class RecorderApp:
                 tr("无法打开框选界面，请重试。", "Cannot open the region selector. Try again."),
                 _WARN,
             )
-            messagebox.showerror(
+            show_error(
+                self.root,
                 tr("无法框选", "Cannot select a region"),
                 tr(
                     "打开框选界面失败：\n{error}",
                     "Cannot open the region selector:\n{error}",
                     error=exc,
                 ),
-                parent=self.root,
             )
 
     def _on_region_selected(self, region: CaptureRegion) -> None:
@@ -1187,10 +1190,14 @@ class RecorderApp:
 
         countdown: CountdownOverlay | None = None
         try:
+            region_rect = ScreenRect(
+                region.left, region.top, region.width, region.height
+            )
             countdown = CountdownOverlay(
                 self.root,
                 None if self._is_max_duration() else self._duration_seconds,
                 on_stop=self._stop_recording_from_overlay,
+                work_area=monitor_work_area_for_rect(region_rect),
             )
             countdown.show()
             self._countdown = countdown
@@ -1491,8 +1498,8 @@ class RecorderApp:
             ),
             _WARN,
         )
-        messagebox.showerror(
-            tr("录制失败", "Recording failed"), str(error), parent=self.root
+        show_error(
+            self.root, tr("录制失败", "Recording failed"), str(error)
         )
 
     def _finish_recording_ui(self) -> None:
@@ -1521,14 +1528,12 @@ class RecorderApp:
         )
         audio_note = self._completion_audio_note(result)
         message = tr(
-            "录制完成\n\n"
             "文件：{name}\n"
             "时长：{duration}\n"
             "大小：{size}\n"
             "画质：{fps} FPS · {bitrate:g} Mbps\n"
             "位置：{parent}{stop}{audio}\n\n"
             "是否打开所在文件夹？",
-            "Recording complete\n\n"
             "File: {name}\n"
             "Duration: {duration}\n"
             "Size: {size}\n"
@@ -1545,17 +1550,20 @@ class RecorderApp:
             audio=audio_note,
         )
         LOGGER.info("录制完成：%s", result.path)
-        open_now = messagebox.askyesno(
-            tr("录制完成", "Recording complete"), message, parent=self.root
+        open_now = ask_yes_no(
+            self.root,
+            tr("录制完成", "Recording complete"),
+            message,
+            kind="success",
         )
         if open_now:
             try:
                 open_folder(result.path.parent)
             except OSError as exc:
-                messagebox.showerror(
+                show_error(
+                    self.root,
                     tr("无法打开文件夹", "Cannot open folder"),
                     str(exc),
-                    parent=self.root,
                 )
 
     def _completion_audio_note(self, result: RecordingResult) -> str:
@@ -1579,8 +1587,8 @@ class RecorderApp:
         self._restore_main()
         self._state = _IDLE
         self._set_status(message, _WARN)
-        messagebox.showerror(
-            tr("无法开始录制", "Cannot start recording"), message, parent=self.root
+        show_error(
+            self.root, tr("无法开始录制", "Cannot start recording"), message
         )
 
     def _restore_main(self) -> None:
@@ -1589,17 +1597,12 @@ class RecorderApp:
             self.root.state("normal")
             self.root.update_idletasks()
             self.root.lift()
-            self.root.focus_force()
             self.root.attributes("-topmost", True)
-            self.root.after(300, self._drop_topmost)
+            self.root.update_idletasks()
+            self.root.attributes("-topmost", False)
+            self.root.focus_force()
         except tk.TclError:
             LOGGER.debug("恢复主窗口失败", exc_info=True)
-
-    def _drop_topmost(self) -> None:
-        try:
-            self.root.attributes("-topmost", False)
-        except tk.TclError:
-            pass
 
     # ------------------------------------------------------------------
     # 设置持久化与退出
@@ -1649,13 +1652,14 @@ class RecorderApp:
 
     def _on_close(self) -> None:
         if self._state == _RECORDING:
-            should_exit = messagebox.askyesno(
+            should_exit = ask_yes_no(
+                self.root,
                 tr("正在录制", "Recording in progress"),
                 tr(
                     "当前正在录制，退出将取消本次录制。\n确定要退出吗？",
                     "Recording is in progress. Exiting will cancel it.\nExit anyway?",
                 ),
-                parent=self.root,
+                kind="warning",
             )
             if not should_exit:
                 return
@@ -1702,14 +1706,14 @@ class RecorderApp:
             exc_info=(exception_type, exception, traceback),
         )
         try:
-            messagebox.showerror(
+            show_error(
+                self.root,
                 tr("程序错误", "Application error"),
                 tr(
                     "界面发生未处理错误：\n{error}",
                     "An unhandled UI error occurred:\n{error}",
                     error=exception,
                 ),
-                parent=self.root,
             )
         except tk.TclError:
             pass
