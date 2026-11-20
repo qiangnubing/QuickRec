@@ -71,6 +71,100 @@ class AudioClip:
         return _source_name(self.kind)
 
 
+def _is_not_found_error(exc: Exception) -> bool:
+    """判断异常是否为 Windows WASAPI 的 E_NOTFOUND (0x80070490)。"""
+
+    return "0x80070490" in str(exc).lower()
+
+
+def _read_device_info(device: object, fallback_name: str) -> AudioDevice | None:
+    try:
+        raw_id = getattr(device, "id", None)
+    except Exception as exc:
+        LOGGER.warning("跳过无法读取 ID 的音频设备：%s", exc)
+        return None
+    if not raw_id:
+        return None
+    device_id = str(raw_id)
+    try:
+        raw_name = getattr(device, "name", "")
+    except Exception as exc:
+        if _is_not_found_error(exc):
+            LOGGER.info("跳过已移除的音频设备：%s", device_id)
+            return None
+        LOGGER.warning("读取音频设备名称失败（%s）：%s", device_id, exc)
+        raw_name = ""
+    name = str(raw_name).strip() if raw_name else ""
+    return AudioDevice(id=device_id, name=name or fallback_name)
+
+
+def _enumerate_devices(
+    fetcher: object,
+    fallback_name: str,
+    kind_label: str,
+) -> tuple[tuple[AudioDevice, ...], Exception | None]:
+    try:
+        raw_devices = fetcher()  # type: ignore[operator]
+    except Exception as exc:
+        if _is_not_found_error(exc):
+            LOGGER.info("未检测到%s（E_NOTFOUND）", kind_label)
+            return (), None
+        LOGGER.warning("枚举%s失败：%s", kind_label, exc)
+        return (), exc
+
+    devices: list[AudioDevice] = []
+    for raw_device in raw_devices:
+        info = _read_device_info(raw_device, fallback_name)
+        if info is not None:
+            devices.append(info)
+    return tuple(devices), None
+
+
+def _default_device_id(
+    fetcher: object,
+    devices: tuple[AudioDevice, ...],
+    kind_label: str,
+) -> str | None:
+    if not devices:
+        return None
+    try:
+        default_device = fetcher()  # type: ignore[operator]
+    except Exception as exc:
+        if _is_not_found_error(exc):
+            LOGGER.info("没有默认%s（E_NOTFOUND）", kind_label)
+        else:
+            LOGGER.warning("获取默认%s失败：%s", kind_label, exc)
+        return None
+    if not default_device:
+        return None
+    try:
+        raw_id = getattr(default_device, "id", None)
+    except Exception as exc:
+        LOGGER.warning("读取默认%s ID 失败：%s", kind_label, exc)
+        return None
+    return str(raw_id) if raw_id else None
+
+
+def _resolve_recording_device(device_id: str, *, loopback: bool) -> object:
+    if _soundcard is None:
+        return None
+    try:
+        candidates = _soundcard.all_microphones(include_loopback=loopback)
+    except Exception:
+        candidates = ()
+    for candidate in candidates:
+        try:
+            candidate_id = str(getattr(candidate, "id", ""))
+        except Exception:
+            continue
+        if candidate_id != device_id:
+            continue
+        if loopback and not bool(getattr(candidate, "isloopback", True)):
+            continue
+        return candidate
+    return _soundcard.get_microphone(device_id, include_loopback=loopback)
+
+
 def list_audio_devices() -> AudioDevices:
     """列出系统输出（用于环回）和真实麦克风。"""
 
@@ -86,22 +180,17 @@ def list_audio_devices() -> AudioDevices:
                 error=AUDIO_IMPORT_ERROR,
             ),
         )
-    try:
-        system = tuple(
-            AudioDevice(id=str(speaker.id), name=speaker.name or tr("默认输出设备", "Default output"))
-            for speaker in _soundcard.all_speakers()
-        )
-        microphones = tuple(
-            AudioDevice(
-                id=str(microphone.id),
-                name=microphone.name or tr("默认麦克风", "Default microphone"),
-            )
-            for microphone in _soundcard.all_microphones(include_loopback=False)
-        )
-        default_speaker = _soundcard.default_speaker()
-        default_microphone = _soundcard.default_microphone()
-    except Exception as exc:  # soundcard 内部为 cffi/COM 异常
-        LOGGER.warning("枚举音频设备失败：%s", exc)
+    system, system_error = _enumerate_devices(
+        _soundcard.all_speakers,
+        tr("默认输出设备", "Default output"),
+        "系统输出设备",
+    )
+    microphones, microphone_error = _enumerate_devices(
+        lambda: _soundcard.all_microphones(include_loopback=False),
+        tr("默认麦克风", "Default microphone"),
+        "麦克风",
+    )
+    if system_error is not None and microphone_error is not None:
         return AudioDevices(
             (),
             (),
@@ -110,16 +199,33 @@ def list_audio_devices() -> AudioDevices:
             tr(
                 "枚举音频设备失败：{error}",
                 "Cannot enumerate audio devices: {error}",
-                error=exc,
+                error=system_error,
             ),
         )
+    if not system and not microphones and (system_error or microphone_error):
+        error = system_error or microphone_error
+        return AudioDevices(
+            (),
+            (),
+            None,
+            None,
+            tr(
+                "枚举音频设备失败：{error}",
+                "Cannot enumerate audio devices: {error}",
+                error=error,
+            ),
+        )
+    default_system_id = _default_device_id(
+        _soundcard.default_speaker, system, "系统输出设备"
+    )
+    default_microphone_id = _default_device_id(
+        _soundcard.default_microphone, microphones, "麦克风"
+    )
     return AudioDevices(
         system=system,
         microphones=microphones,
-        default_system_id=str(default_speaker.id) if default_speaker else None,
-        default_microphone_id=(
-            str(default_microphone.id) if default_microphone else None
-        ),
+        default_system_id=default_system_id,
+        default_microphone_id=default_microphone_id,
     )
 
 
@@ -255,7 +361,7 @@ class AudioRecorder:
         ready_reported = False
         frames_written = 0
         try:
-            device = _soundcard.get_microphone(device_id, include_loopback=loopback)
+            device = _resolve_recording_device(device_id, loopback=loopback)
             if device is None:
                 raise AudioRecordingError(
                     tr(
