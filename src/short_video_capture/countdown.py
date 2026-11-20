@@ -8,20 +8,25 @@ from collections.abc import Callable
 from tkinter import font as tkfont
 
 from .i18n import tr
+from .widgets import RoundedButton, RoundedCard, render_dot_png
 from .win32 import (
     exclude_from_capture,
     make_overlay_window,
     primary_work_area,
 )
 
+_TRANSPARENT_KEY = "#010203"
 _BG = "#0F172A"
 _FG = "#F8FAFC"
 _MUTED = "#CBD5E1"
-_ACCENT = "#F43F5E"
+_ACCENT = "#F55342"
+_ACCENT_HOVER = "#E54332"
+_ACCENT_ACTIVE = "#D63726"
+_DOT_DIM = "#7F1D1D"
 
 
 class CountdownOverlay:
-    """置顶、无边框、点击穿透的倒计时，录制时显示屏幕右下角。"""
+    """置顶、无边框、圆角抗锯齿的倒计时浮层，录制时显示在屏幕右下角。"""
 
     def __init__(
         self,
@@ -37,37 +42,71 @@ class CountdownOverlay:
         self._dot_visible = True
         self._stopping = False
         self._closed = False
-        self._timer_width = 10 if self._max_mode else 8
+        self._timer_width = 10 if self._max_mode else 7
         self._last_timer_text: str | None = None
 
         self.window = tk.Toplevel(root)
         self.window.withdraw()
+        try:
+            self._dpi_scale = max(1.0, self.window.winfo_fpixels("1i") / 96.0)
+        except tk.TclError:
+            self._dpi_scale = 1.0
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
+        transparent_supported = True
+        try:
+            self.window.configure(bg=_TRANSPARENT_KEY)
+            self.window.attributes("-transparentcolor", _TRANSPARENT_KEY)
+        except tk.TclError:
+            transparent_supported = False
+            self.window.configure(bg=_BG)
         self.window.attributes("-alpha", 0.96)
-        self.window.configure(bg=_BG)
 
-        card = tk.Frame(
+        card = RoundedCard(
             self.window,
-            bg=_BG,
-            highlightbackground=_ACCENT,
-            highlightthickness=1,
+            parent_bg=_TRANSPARENT_KEY if transparent_supported else _BG,
+            card_bg=_BG,
+            border=_ACCENT,
+            border_width=1.2,
+            radius=self._s(12),
+            pad_x=self._s(14),
+            pad_y=self._s(9),
+            shadow=False,
+            transparent_key=transparent_supported,
         )
         card.pack(fill="both", expand=True)
+        content = card.inner
 
-        content = tk.Frame(card, bg=_BG)
-        content.pack(padx=10, pady=8)
-
-        self._dot = tk.Canvas(
-            content,
-            width=12,
-            height=12,
-            bg=_BG,
-            highlightthickness=0,
-            bd=0,
+        dot_size = self._s(16)
+        dot_radius = self._s(4)
+        self._dot_on_photo = tk.PhotoImage(
+            master=self.window,
+            data=render_dot_png(
+                dot_size,
+                _ACCENT,
+                _BG,
+                dot_radius=dot_radius,
+                glow_alpha=0.38,
+                glow_blur=3.0,
+            ),
         )
-        self._dot.pack(side="left", padx=(0, 6))
-        self._dot_id = self._dot.create_oval(2, 2, 10, 10, fill=_ACCENT, outline="")
+        self._dot_off_photo = tk.PhotoImage(
+            master=self.window,
+            data=render_dot_png(
+                dot_size,
+                _DOT_DIM,
+                _BG,
+                dot_radius=dot_radius,
+            ),
+        )
+        self._dot = tk.Label(
+            content,
+            image=self._dot_on_photo,
+            bg=_BG,
+            bd=0,
+            highlightthickness=0,
+        )
+        self._dot.pack(side="left", padx=(0, self._s(5)))
 
         tk.Label(
             content,
@@ -75,9 +114,9 @@ class CountdownOverlay:
             bg=_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(0, 8))
+        ).pack(side="left", padx=(0, self._s(8)))
 
-        self._timer_font = tkfont.Font(family="Consolas", size=17, weight="bold")
+        self._timer_font = tkfont.Font(family="Consolas", size=16, weight="bold")
         self._timer = tk.Label(
             content,
             text=(
@@ -93,24 +132,27 @@ class CountdownOverlay:
         )
         self._timer.pack(side="left")
 
-        self._stop_button = tk.Button(
+        self._stop_button = RoundedButton(
             content,
             text=tr("停止", "Stop"),
             command=self._request_stop,
-            bg="#DC2626",
+            parent_bg=_BG,
+            fill=_ACCENT,
+            hover_fill=_ACCENT_HOVER,
+            active_fill=_ACCENT_ACTIVE,
             fg="#FFFFFF",
-            activebackground="#B91C1C",
-            activeforeground="#FFFFFF",
-            disabledforeground="#FEE2E2",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=8,
-            pady=2,
-            cursor="hand2",
+            disabled_fill="#7F1D1D",
+            disabled_fg="#FECACA",
             font=("Microsoft YaHei UI", 9, "bold"),
+            min_width=self._s(58),
+            text_pad_x=self._s(12),
+            height=self._s(30),
+            radius=self._s(7),
         )
-        self._stop_button.pack(side="left", padx=(10, 0))
+        self._stop_button.pack(side="left", padx=(self._s(10), 0))
+
+    def _s(self, px: int) -> int:
+        return max(1, round(px * self._dpi_scale))
 
     def show(self) -> None:
         self.window.deiconify()
@@ -191,8 +233,8 @@ class CountdownOverlay:
             return
         self._dot_visible = not self._dot_visible
         try:
-            self._dot.itemconfigure(
-                self._dot_id, fill=_ACCENT if self._dot_visible else "#7F1D1D"
+            self._dot.configure(
+                image=self._dot_on_photo if self._dot_visible else self._dot_off_photo
             )
         except tk.TclError:
             self._closed = True
@@ -211,12 +253,10 @@ class CountdownOverlay:
             return
         self._stopping = True
         try:
-            self._stop_button.configure(
-                text=tr("保存中…", "Saving…"),
-                state="disabled",
-                bg="#7F1D1D",
-                cursor="arrow",
-            )
+            self._stop_button.set_text(tr("保存中…", "Saving…"))
+            self._stop_button.set_state("disabled")
+            self.window.update_idletasks()
+            self._place_bottom_right()
         except tk.TclError:
             self._closed = True
 

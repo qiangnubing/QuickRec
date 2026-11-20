@@ -11,7 +11,7 @@ import time
 import tkinter as tk
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 
 from .audio import (
     AudioDevice,
@@ -26,6 +26,11 @@ from .config import (
     DURATION_OPTIONS,
     MAX_DURATION,
     MAX_DURATION_SENTINEL,
+    MAX_FPS,
+    MAX_VIDEO_BITRATE_MBPS,
+    MIN_DURATION,
+    MIN_FPS,
+    MIN_VIDEO_BITRATE_MBPS,
     AppSettings,
     SettingsStore,
     parse_audio_bitrate_kbps,
@@ -49,6 +54,14 @@ from .paths import (
 from .pipeline import RecordingResult, format_audio_warning, record_session
 from .region_selector import RegionSelector
 from .tray import TrayCommand, TrayError, TrayIcon, TrayMenuItem
+from .widgets import (
+    RoundedButton,
+    RoundedCard,
+    RoundedCheckbox,
+    RoundedDropdown,
+    RoundedEntry,
+    load_scaled_icon_png,
+)
 from .win32 import enable_dpi_awareness
 
 LOGGER = logging.getLogger(__name__)
@@ -62,11 +75,16 @@ _BG = "#F1F5F9"
 _HEADER_BG = "#0F172A"
 _CARD_BG = "#FFFFFF"
 _BORDER = "#E2E8F0"
+_INPUT_BORDER = "#D8E0EA"
 _FIELD_BG = "#F8FAFC"
+_BTN_NEUTRAL = "#E4EAF3"
+_BTN_NEUTRAL_HOVER = "#D6DFEC"
+_BTN_NEUTRAL_ACTIVE = "#C8D4E5"
 _TEXT = "#0F172A"
 _MUTED = "#64748B"
-_ACCENT = "#EF4444"
-_ACCENT_HOVER = "#DC2626"
+_ACCENT = "#F55342"
+_ACCENT_HOVER = "#E54332"
+_ACCENT_ACTIVE = "#D63726"
 _INFO = "#2563EB"
 _SUCCESS = "#15803D"
 _WARN = "#B91C1C"
@@ -132,7 +150,7 @@ class RecorderApp:
         self.status_var = tk.StringVar(value=self._idle_status())
         self.fps_var = tk.StringVar(value=str(settings.fps))
         self.video_bitrate_var = tk.StringVar(
-            value=f"{settings.video_bitrate_mbps:g}"
+            value=self._format_bitrate_mbps(settings.video_bitrate_mbps)
         )
         self.audio_bitrate_var = tk.StringVar(value=str(settings.audio_bitrate_kbps))
         self.system_audio_var = tk.BooleanVar(value=settings.system_audio_enabled)
@@ -141,6 +159,9 @@ class RecorderApp:
         self.system_device_var = tk.StringVar()
         self.microphone_device_var = tk.StringVar()
         self._include_cursor = settings.record_cursor
+        self._dpi_scale = 1.0
+        self._header_icon_image: tk.PhotoImage | None = None
+        self._audio_note_visible = False
 
         self._configure_window()
         self._build_ui()
@@ -163,10 +184,20 @@ class RecorderApp:
         self._poll_job = self.root.after(100, self._poll_events)
 
     @staticmethod
+    def _format_bitrate_mbps(value: float) -> str:
+        rounded = round(value, 1)
+        if abs(value - rounded) < 1e-6:
+            return f"{rounded:.1f}"
+        return f"{value:g}"
+
+    def _s(self, px: int) -> int:
+        return max(1, round(px * self._dpi_scale))
+
+    @staticmethod
     def _idle_status() -> str:
         return tr(
-            "就绪，选择时长和保存位置后开始录制。",
-            "Ready. Choose a duration and save location to start.",
+            "录制时自动隐藏到系统托盘；最小化窗口也会隐藏到托盘。",
+            "Recording hides to the system tray; minimizing also hides it.",
         )
 
     @staticmethod
@@ -213,6 +244,10 @@ class RecorderApp:
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.report_callback_exception = self._on_tk_exception
+        try:
+            self._dpi_scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)
+        except tk.TclError:
+            self._dpi_scale = 1.0
 
         try:
             self.root.iconbitmap(str(ICON_ICO))
@@ -224,53 +259,23 @@ class RecorderApp:
         except tk.TclError:
             self._icon_image = None
             LOGGER.debug("无法加载窗口 PNG 图标", exc_info=True)
-
-        style = ttk.Style(self.root)
         try:
-            style.theme_use("clam")
+            scaled_png = load_scaled_icon_png(ICON_PNG, self._s(48))
+            self._header_icon_image = (
+                tk.PhotoImage(master=self.root, data=scaled_png)
+                if scaled_png is not None
+                else self._icon_image
+            )
         except tk.TclError:
-            pass
-        style.configure(
-            "Recorder.TCombobox",
-            fieldbackground=_FIELD_BG,
-            background=_FIELD_BG,
-            foreground=_TEXT,
-            arrowcolor="#475569",
-            padding=4,
-            font=("Microsoft YaHei UI", 9),
-        )
-        style.map(
-            "Recorder.TCombobox",
-            fieldbackground=[
-                ("readonly", _FIELD_BG),
-                ("disabled", "#F1F5F9"),
-            ],
-            foreground=[("readonly", _TEXT), ("disabled", _MUTED)],
-            selectbackground=[("readonly", _FIELD_BG)],
-            selectforeground=[("readonly", _TEXT)],
-            background=[("readonly", _FIELD_BG), ("disabled", "#F1F5F9")],
-        )
-
-        # Tk 的 Combobox 下拉列表是独立的 Listbox，需要单独设置选项数据库。
-        dropdown_options = {
-            "background": _FIELD_BG,
-            "foreground": _TEXT,
-            "selectBackground": "#DBEAFE",
-            "selectForeground": _TEXT,
-            "font": "{Microsoft YaHei UI} 9",
-            "borderWidth": "0",
-            "highlightThickness": "0",
-        }
-        for option, value in dropdown_options.items():
-            self.root.option_add(f"*TCombobox*Listbox.{option}", value)
+            self._header_icon_image = self._icon_image
 
     def _fit_and_center_window(self) -> None:
         self.root.update_idletasks()
-        width = max(760, self.root.winfo_reqwidth())
-        height = max(700, self.root.winfo_reqheight() + 8)
+        width = max(self._s(668), self.root.winfo_reqwidth())
+        height = self.root.winfo_reqheight() + self._s(2)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        height = min(height, max(620, screen_height - 80))
+        height = min(height, max(self._s(480), screen_height - 80))
         x = max(0, (screen_width - width) // 2)
         y = max(0, (screen_height - height) // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
@@ -278,38 +283,46 @@ class RecorderApp:
     def _build_ui(self) -> None:
         for child in self.root.winfo_children():
             child.destroy()
+        self._audio_note_visible = False
+
         header = tk.Frame(self.root, bg=_HEADER_BG)
         header.pack(fill="x")
         header_inner = tk.Frame(header, bg=_HEADER_BG)
-        header_inner.pack(fill="x", padx=30, pady=18)
+        header_inner.pack(fill="x", padx=self._s(20), pady=self._s(12))
 
-        if self._icon_image is not None:
+        if self._header_icon_image is not None:
             tk.Label(
-                header_inner, image=self._icon_image, bg=_HEADER_BG, bd=0
-            ).pack(side="left", padx=(0, 16))
+                header_inner, image=self._header_icon_image, bg=_HEADER_BG, bd=0
+            ).pack(side="left", padx=(0, self._s(14)))
 
         language_box = tk.Frame(header_inner, bg=_HEADER_BG)
-        language_box.pack(side="right", padx=(12, 0), anchor="n")
+        language_box.pack(side="right", padx=(self._s(12), 0))
         tk.Label(
             language_box,
             text=tr("语言", "Language"),
             bg=_HEADER_BG,
             fg="#94A3B8",
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(0, 6))
-        self._language_combo = ttk.Combobox(
+        ).pack(side="left", padx=(0, self._s(8)))
+        self._language_combo = RoundedDropdown(
             language_box,
             textvariable=self.language_var,
             values=[label for _code, label in LANGUAGES],
-            state="readonly",
-            width=8,
-            style="Recorder.TCombobox",
+            on_select=self._on_language_selected,
+            parent_bg=_HEADER_BG,
+            field_bg="#FFFFFF",
+            border=None,
+            hover_border=None,
+            active_border=_INFO,
+            fg=_TEXT,
+            arrow_color=_MUTED,
             font=("Microsoft YaHei UI", 9),
+            width=self._s(78),
+            height=self._s(30),
+            radius=self._s(6),
+            pad_x=self._s(10),
         )
         self._language_combo.pack(side="left")
-        self._language_combo.bind(
-            "<<ComboboxSelected>>", self._on_language_selected
-        )
 
         title_area = tk.Frame(header_inner, bg=_HEADER_BG)
         title_area.pack(side="left", fill="x", expand=True)
@@ -318,7 +331,7 @@ class RecorderApp:
             text="QuickRec",
             bg=_HEADER_BG,
             fg="#F8FAFC",
-            font=("Microsoft YaHei UI", 20, "bold"),
+            font=("Microsoft YaHei UI", 18, "bold"),
             anchor="w",
         ).pack(fill="x")
         tk.Label(
@@ -329,46 +342,43 @@ class RecorderApp:
             ),
             bg=_HEADER_BG,
             fg="#94A3B8",
-            font=("Microsoft YaHei UI", 10),
+            font=("Microsoft YaHei UI", 9),
             anchor="w",
-        ).pack(fill="x", pady=(4, 0))
+        ).pack(fill="x", pady=(self._s(2), 0))
 
         body = tk.Frame(self.root, bg=_BG)
-        body.pack(fill="both", expand=True, padx=30, pady=18)
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._s(18),
+            pady=(self._s(12), self._s(10)),
+        )
 
         self._build_duration_card(body)
         self._build_quality_card(body)
         self._build_output_card(body)
 
-        self._start_button = tk.Button(
+        self._start_button = RoundedButton(
             body,
             text=tr("开始录制", "Start recording"),
             command=self._start_flow,
-            bg=_ACCENT,
+            parent_bg=_BG,
+            fill=_ACCENT,
+            hover_fill=_ACCENT_HOVER,
+            active_fill=_ACCENT_ACTIVE,
             fg="#FFFFFF",
-            activebackground=_ACCENT_HOVER,
-            activeforeground="#FFFFFF",
-            disabledforeground="#FEE2E2",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            pady=11,
-            cursor="hand2",
             font=("Microsoft YaHei UI", 12, "bold"),
+            height=self._s(47),
+            radius=self._s(9),
+            shadow_color=_ACCENT,
+            shadow_alpha=0.22,
+            shadow_blur=4.5,
+            shadow_offset_y=2.0,
+            pad_x=1,
+            pad_top=1,
+            pad_bottom=6,
         )
-        self._start_button.pack(fill="x", pady=(0, 8))
-        self._bind_hover(self._start_button, _ACCENT, _ACCENT_HOVER)
-
-        tk.Label(
-            body,
-            text=tr(
-                "录制时自动隐藏到系统托盘；最小化窗口也会隐藏到托盘。",
-                "Recording hides to the system tray; minimizing also hides it.",
-            ),
-            bg=_BG,
-            fg=_MUTED,
-            font=("Microsoft YaHei UI", 9),
-        ).pack()
+        self._start_button.pack(fill="x", pady=(self._s(2), self._s(4)))
 
         self.status_label = tk.Label(
             body,
@@ -376,11 +386,11 @@ class RecorderApp:
             bg=_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
-            anchor="w",
-            justify="left",
-            wraplength=690,
+            anchor="center",
+            justify="center",
+            wraplength=self._s(620),
         )
-        self.status_label.pack(fill="x", pady=(8, 0))
+        self.status_label.pack(fill="x", pady=(0, self._s(2)))
 
         self._path_entry.bind("<FocusIn>", lambda _event: self._clear_status())
         self._path_entry.bind("<Return>", lambda _event: self._start_flow())
@@ -409,60 +419,68 @@ class RecorderApp:
         ).pack(side="right")
 
         row = tk.Frame(card, bg=_CARD_BG)
-        row.pack(fill="x", pady=(8, 0))
-        self._duration_buttons: dict[int, tk.Button] = {}
+        row.pack(fill="x", pady=(self._s(8), 0))
+        self._duration_buttons: dict[int, RoundedButton] = {}
         presets = [(0, "MAX")] + [
             (seconds, tr(f"{seconds} 秒", f"{seconds}s"))
             for seconds in DURATION_OPTIONS
         ]
         for seconds, label in presets:
-            button = tk.Button(
+            button = RoundedButton(
                 row,
                 text=label,
                 command=lambda value=seconds: self._choose_duration(value),
-                width=9,
-                pady=8,
-                relief="flat",
-                bd=0,
-                highlightthickness=0,
-                cursor="hand2",
+                parent_bg=_CARD_BG,
+                fill=_BTN_NEUTRAL,
+                hover_fill=_BTN_NEUTRAL_HOVER,
+                active_fill=_BTN_NEUTRAL_ACTIVE,
+                fg=_TEXT,
                 font=("Microsoft YaHei UI", 10, "bold"),
+                width=self._s(88),
+                height=self._s(40),
+                radius=self._s(8),
+                shadow_blur=3.8,
+                shadow_offset_y=1.8,
+                pad_x=4,
+                pad_top=1,
+                pad_bottom=5,
             )
-            button.pack(side="left", padx=(0, 8))
+            button.pack(side="left", padx=(0, self._s(1)))
             self._duration_buttons[seconds] = button
 
+        custom_group = tk.Frame(row, bg=_CARD_BG)
+        custom_group.pack(side="right", pady=(0, self._s(3)))
         tk.Label(
-            row,
+            custom_group,
             text=tr("自定义", "Custom"),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(8, 6))
-        tk.Spinbox(
-            row,
-            from_=1,
-            to=MAX_DURATION,
-            increment=1,
-            width=7,
+        ).pack(side="left", padx=(0, self._s(6)))
+        duration_input = RoundedEntry(
+            custom_group,
             textvariable=self.duration_text,
-            bg=_FIELD_BG,
+            parent_bg=_CARD_BG,
+            field_bg=_FIELD_BG,
+            border=_INPUT_BORDER,
+            focus_border=_INFO,
             fg=_TEXT,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=_BORDER,
-            highlightcolor=_INFO,
-            buttonbackground="#E2E8F0",
             font=("Consolas", 10),
+            width=self._s(54),
+            height=self._s(32),
+            radius=self._s(6),
             justify="center",
-        ).pack(side="left", ipady=5)
+            pad_x=self._s(6),
+            step_callback=self._step_duration,
+        )
+        duration_input.pack(side="left")
         tk.Label(
-            row,
+            custom_group,
             text=tr("秒", "sec"),
             bg=_CARD_BG,
             fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(self._s(6), 0))
 
     def _build_quality_card(self, parent: tk.Misc) -> None:
         card = self._make_card(parent)
@@ -492,145 +510,129 @@ class RecorderApp:
         ).pack(side="right")
 
         quality = tk.Frame(card, bg=_CARD_BG)
-        quality.pack(fill="x", pady=(8, 6))
-        self._field_group(
+        quality.pack(fill="x", pady=(self._s(8), self._s(10)))
+        self._inline_field(
             quality,
             tr("帧率", "FPS"),
             self.fps_var,
-            "FPS",
-            width=5,
-            minimum=5,
-            maximum=60,
-            step=1,
-        ).pack(side="left", padx=(0, 22))
-        self._field_group(
+            tr("FPS", ""),
+            width=self._s(44),
+            step_callback=self._step_fps,
+        ).pack(side="left", padx=(0, self._s(14)))
+        self._inline_field(
             quality,
-            tr("视频码率", "Video bitrate"),
+            tr("视频码率", "Bitrate"),
             self.video_bitrate_var,
             "Mbps",
-            width=6,
-        ).pack(side="left", padx=(0, 22))
-        audio_group = tk.Frame(quality, bg=_CARD_BG)
-        audio_group.pack(side="left")
-        tk.Label(
-            audio_group,
-            text=tr("音频码率", "Audio bitrate"),
-            bg=_CARD_BG,
-            fg=_TEXT,
-            font=("Microsoft YaHei UI", 9),
-            anchor="w",
-        ).pack(anchor="w")
-        audio_value_row = tk.Frame(audio_group, bg=_CARD_BG)
-        audio_value_row.pack(anchor="w", pady=(3, 0))
-        self._audio_bitrate_combo = ttk.Combobox(
-            audio_value_row,
-            textvariable=self.audio_bitrate_var,
-            values=[str(value) for value in AUDIO_BITRATE_OPTIONS],
-            state="readonly",
-            width=6,
-            style="Recorder.TCombobox",
-            font=("Microsoft YaHei UI", 9),
-        )
-        self._audio_bitrate_combo.pack(side="left")
-        tk.Label(
-            audio_value_row,
-            text="kbps",
-            bg=_CARD_BG,
-            fg=_MUTED,
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side="left", padx=(4, 0))
-        self._cursor_check = tk.Checkbutton(
+            width=self._s(52),
+            step_callback=self._step_video_bitrate,
+        ).pack(side="left", padx=(0, self._s(14)))
+        self._inline_field(
+            quality,
+            tr("音频", "Audio"),
+            self.audio_bitrate_var,
+            "kbps",
+            width=self._s(48),
+            step_callback=self._step_audio_bitrate,
+        ).pack(side="left")
+
+        self._cursor_check = RoundedCheckbox(
             quality,
             text=tr("录制鼠标指针", "Record cursor"),
             variable=self.record_cursor_var,
             bg=_CARD_BG,
-            activebackground=_CARD_BG,
-            selectcolor=_CARD_BG,
             fg=_TEXT,
-            activeforeground=_TEXT,
-            anchor="w",
-            highlightthickness=0,
-            bd=0,
+            disabled_fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
+            box_size=self._s(16),
+            radius=self._s(4),
         )
-        self._cursor_check.pack(side="left", padx=(22, 0), pady=(17, 0))
+        self._cursor_check.pack(side="right")
 
-        tk.Frame(card, bg=_BORDER, height=1).pack(fill="x", pady=(4, 7))
+        check_width = self._s(104 if self._language == "zh" else 118)
 
         system_row = tk.Frame(card, bg=_CARD_BG)
-        system_row.pack(fill="x", pady=(0, 5))
-        self._system_check = tk.Checkbutton(
+        system_row.pack(fill="x", pady=(0, self._s(8)))
+        self._system_check = RoundedCheckbox(
             system_row,
             text=tr("系统声音", "System audio"),
             variable=self.system_audio_var,
             command=self._sync_audio_controls,
             bg=_CARD_BG,
-            activebackground=_CARD_BG,
-            selectcolor=_CARD_BG,
             fg=_TEXT,
-            activeforeground=_TEXT,
-            anchor="w",
-            width=12,
-            highlightthickness=0,
-            bd=0,
+            disabled_fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
+            box_size=self._s(16),
+            radius=self._s(4),
+            width=check_width,
         )
         self._system_check.pack(side="left")
-        self._system_combo = ttk.Combobox(
+        self._system_combo = RoundedDropdown(
             system_row,
             textvariable=self.system_device_var,
-            state="readonly",
-            width=45,
-            style="Recorder.TCombobox",
+            parent_bg=_CARD_BG,
+            field_bg="#FFFFFF",
+            disabled_bg=_BG,
+            border=_INPUT_BORDER,
+            hover_border="#CBD5E1",
+            active_border=_INFO,
+            fg=_TEXT,
+            disabled_fg="#94A3B8",
+            arrow_color=_MUTED,
             font=("Microsoft YaHei UI", 9),
+            height=self._s(32),
+            radius=self._s(6),
+            pad_x=self._s(10),
         )
         self._system_combo.pack(side="left", fill="x", expand=True)
 
         microphone_row = tk.Frame(card, bg=_CARD_BG)
-        microphone_row.pack(fill="x", pady=(0, 5))
-        self._microphone_check = tk.Checkbutton(
+        microphone_row.pack(fill="x")
+        self._microphone_check = RoundedCheckbox(
             microphone_row,
             text=tr("麦克风", "Microphone"),
             variable=self.microphone_var,
             command=self._sync_audio_controls,
             bg=_CARD_BG,
-            activebackground=_CARD_BG,
-            selectcolor=_CARD_BG,
             fg=_TEXT,
-            activeforeground=_TEXT,
-            anchor="w",
-            width=12,
-            highlightthickness=0,
-            bd=0,
+            disabled_fg=_MUTED,
             font=("Microsoft YaHei UI", 9),
+            box_size=self._s(16),
+            radius=self._s(4),
+            width=check_width,
         )
         self._microphone_check.pack(side="left")
-        self._microphone_combo = ttk.Combobox(
+        self._microphone_combo = RoundedDropdown(
             microphone_row,
             textvariable=self.microphone_device_var,
-            state="readonly",
-            width=45,
-            style="Recorder.TCombobox",
+            parent_bg=_CARD_BG,
+            field_bg="#FFFFFF",
+            disabled_bg=_BG,
+            border=_INPUT_BORDER,
+            hover_border="#CBD5E1",
+            active_border=_INFO,
+            fg=_TEXT,
+            disabled_fg="#94A3B8",
+            arrow_color=_MUTED,
             font=("Microsoft YaHei UI", 9),
+            height=self._s(32),
+            radius=self._s(6),
+            pad_x=self._s(10),
         )
         self._microphone_combo.pack(side="left", fill="x", expand=True)
 
         self._audio_note = tk.Label(
             card,
-            text=tr(
-                "系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
-                "System audio is captured via speaker loopback and mixed into one AAC track.",
-            ),
+            text="",
             bg=_CARD_BG,
-            fg=_MUTED,
+            fg=_WARN,
             font=("Microsoft YaHei UI", 8),
             anchor="w",
             justify="left",
-            wraplength=680,
+            wraplength=self._s(590),
         )
-        self._audio_note.pack(fill="x", pady=(2, 0))
 
-    def _field_group(
+    def _inline_field(
         self,
         parent: tk.Misc,
         label: str,
@@ -638,46 +640,40 @@ class RecorderApp:
         unit: str,
         *,
         width: int,
-        minimum: float = 0.5,
-        maximum: float = 50,
-        step: float = 0.5,
+        step_callback: object = None,
     ) -> tk.Frame:
         group = tk.Frame(parent, bg=_CARD_BG)
         tk.Label(
             group,
             text=label,
             bg=_CARD_BG,
-            fg=_TEXT,
-            font=("Microsoft YaHei UI", 9),
-            anchor="w",
-        ).pack(anchor="w")
-        value_row = tk.Frame(group, bg=_CARD_BG)
-        value_row.pack(anchor="w", pady=(3, 0))
-        tk.Spinbox(
-            value_row,
-            from_=minimum,
-            to=maximum,
-            increment=step,
-            width=width,
-            textvariable=variable,
-            bg=_FIELD_BG,
-            fg=_TEXT,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=_BORDER,
-            highlightcolor=_INFO,
-            buttonbackground="#E2E8F0",
-            font=("Consolas", 9),
-            justify="center",
-        ).pack(side="left", ipady=3)
-        tk.Label(
-            value_row,
-            text=unit,
-            bg=_CARD_BG,
             fg=_MUTED,
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side="left", padx=(4, 0))
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left", padx=(0, self._s(5)))
+        RoundedEntry(
+            group,
+            textvariable=variable,
+            parent_bg=_CARD_BG,
+            field_bg=_FIELD_BG,
+            border=_INPUT_BORDER,
+            focus_border=_INFO,
+            fg=_TEXT,
+            font=("Consolas", 9),
+            width=width,
+            height=self._s(28),
+            radius=self._s(6),
+            justify="center",
+            pad_x=self._s(5),
+            step_callback=step_callback if callable(step_callback) else None,
+        ).pack(side="left")
+        if unit:
+            tk.Label(
+                group,
+                text=unit,
+                bg=_CARD_BG,
+                fg=_MUTED,
+                font=("Microsoft YaHei UI", 9),
+            ).pack(side="left", padx=(self._s(5), 0))
         return group
 
     def _build_output_card(self, parent: tk.Misc) -> None:
@@ -707,70 +703,94 @@ class RecorderApp:
             font=("Microsoft YaHei UI", 9),
         ).pack(side="right")
 
-        path_row = tk.Frame(
-            card,
-            bg=_FIELD_BG,
-            highlightbackground=_BORDER,
-            highlightthickness=1,
-        )
-        path_row.pack(fill="x", pady=(7, 5))
-        self._path_entry = tk.Entry(
+        path_row = tk.Frame(card, bg=_CARD_BG)
+        path_row.pack(fill="x", pady=(self._s(8), 0))
+        path_box = RoundedEntry(
             path_row,
             textvariable=self.output_var,
-            bg=_FIELD_BG,
+            parent_bg=_CARD_BG,
+            field_bg=_FIELD_BG,
+            border=_INPUT_BORDER,
+            focus_border=_INFO,
             fg=_TEXT,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            insertbackground=_TEXT,
             font=("Microsoft YaHei UI", 9),
+            height=self._s(34),
+            radius=self._s(6),
+            justify="left",
+            pad_x=self._s(10),
         )
-        self._path_entry.pack(side="left", fill="x", expand=True, padx=12, pady=9)
-        tk.Button(
-            path_row,
-            text=tr("浏览…", "Browse…"),
-            command=self._browse_output,
-            bg="#E2E8F0",
-            fg="#334155",
-            activebackground="#CBD5E1",
-            activeforeground=_TEXT,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=14,
-            pady=4,
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 9),
-        ).pack(side="right", padx=5)
+        path_box.pack(side="left", fill="x", expand=True)
+        self._path_entry = path_box.entry
 
-        tk.Label(
-            card,
-            text=tr(
-                "视频保存为 MP4（H.264），默认使用 Windows 视频文件夹。",
-                "Saved as MP4 (H.264), defaulting to the Windows Videos folder.",
-            ),
-            bg=_CARD_BG,
-            fg=_MUTED,
-            font=("Microsoft YaHei UI", 8),
-            anchor="w",
-        ).pack(fill="x")
+        RoundedButton(
+            path_row,
+            text=tr("浏览...", "Browse..."),
+            command=self._browse_output,
+            parent_bg=_CARD_BG,
+            fill=_BTN_NEUTRAL,
+            hover_fill=_BTN_NEUTRAL_HOVER,
+            active_fill=_BTN_NEUTRAL_ACTIVE,
+            fg=_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            width=self._s(80),
+            height=self._s(34),
+            radius=self._s(6),
+        ).pack(side="right", padx=(self._s(8), 0))
 
     def _make_card(self, parent: tk.Misc) -> tk.Frame:
-        card = tk.Frame(
+        card = RoundedCard(
             parent,
-            bg=_CARD_BG,
-            highlightbackground=_BORDER,
-            highlightthickness=1,
+            parent_bg=_BG,
+            card_bg=_CARD_BG,
+            border=_BORDER,
+            radius=self._s(10),
+            pad_x=self._s(16),
+            pad_y=(self._s(10), self._s(12)),
+            shadow=True,
         )
-        card.pack(fill="x", pady=(0, 11))
-        inner = tk.Frame(card, bg=_CARD_BG)
-        inner.pack(fill="x", padx=18, pady=12)
-        return inner
+        card.pack(fill="x", pady=(0, self._s(8)))
+        return card.inner
 
-    @staticmethod
-    def _bind_hover(button: tk.Button, normal: str, hover: str) -> None:
-        button.bind("<Enter>", lambda _event: button.configure(bg=hover))
-        button.bind("<Leave>", lambda _event: button.configure(bg=normal))
+    def _step_duration(self, delta: int) -> None:
+        raw = self.duration_text.get().strip()
+        if raw.upper() == "MAX":
+            current = 60 if delta < 0 else 1
+        else:
+            try:
+                current = int(raw) + delta
+            except ValueError:
+                current = self._duration_seconds or 10
+        current = max(MIN_DURATION, min(MAX_DURATION, current))
+        self.duration_text.set(str(current))
+
+    def _step_fps(self, delta: int) -> None:
+        try:
+            current = int(self.fps_var.get().strip()) + delta
+        except ValueError:
+            current = self._video_settings.fps
+        current = max(MIN_FPS, min(MAX_FPS, current))
+        self.fps_var.set(str(current))
+
+    def _step_video_bitrate(self, delta: int) -> None:
+        try:
+            current = float(self.video_bitrate_var.get().strip()) + delta * 0.5
+        except ValueError:
+            current = self._video_settings.bitrate_mbps
+        current = max(MIN_VIDEO_BITRATE_MBPS, min(MAX_VIDEO_BITRATE_MBPS, current))
+        self.video_bitrate_var.set(self._format_bitrate_mbps(current))
+
+    def _step_audio_bitrate(self, delta: int) -> None:
+        try:
+            current = int(self.audio_bitrate_var.get().strip())
+        except ValueError:
+            current = self._audio_bitrate_kbps
+        options = list(AUDIO_BITRATE_OPTIONS)
+        if current in options:
+            idx = options.index(current) + delta
+        else:
+            idx = sum(1 for val in options if val < current) + (0 if delta > 0 else -1)
+        idx = max(0, min(len(options) - 1, idx))
+        self.audio_bitrate_var.set(str(options[idx]))
 
     # ------------------------------------------------------------------
     # 时长、画质与设备选择
@@ -812,9 +832,8 @@ class RecorderApp:
         self.language_var.set(language_name(self._language))
         self._duration_seconds = duration
         self._build_ui()
-        # A freshly created Spinbox clamps its textvariable, so restore MAX or
-        # the custom duration after the rebuilt widgets exist.
         self._choose_duration(duration)
+        self._on_duration_text_changed()
         self._fit_and_center_window()
         self._refresh_audio_devices(system_id, microphone_id)
         self._fit_and_center_window()
@@ -832,18 +851,22 @@ class RecorderApp:
                 seconds = None
         for value, button in self._duration_buttons.items():
             if value == seconds:
-                button.configure(
-                    bg=_ACCENT,
+                button.set_style(
+                    fill=_ACCENT,
+                    hover_fill=_ACCENT_HOVER,
+                    active_fill=_ACCENT_ACTIVE,
                     fg="#FFFFFF",
-                    activebackground=_ACCENT_HOVER,
-                    activeforeground="#FFFFFF",
+                    shadow_color=_ACCENT,
+                    shadow_alpha=0.22,
                 )
             else:
-                button.configure(
-                    bg="#E2E8F0",
-                    fg="#334155",
-                    activebackground="#CBD5E1",
-                    activeforeground=_TEXT,
+                button.set_style(
+                    fill=_BTN_NEUTRAL,
+                    hover_fill=_BTN_NEUTRAL_HOVER,
+                    active_fill=_BTN_NEUTRAL_ACTIVE,
+                    fg=_TEXT,
+                    shadow_color=None,
+                    shadow_alpha=0.0,
                 )
 
     def _refresh_audio_devices(
@@ -877,40 +900,15 @@ class RecorderApp:
             preferred_microphone_id,
             system=False,
         )
+        warning_text = ""
         if devices.error:
-            self._audio_note.configure(text=device_error_text(devices.error), fg=_WARN)
+            warning_text = device_error_text(devices.error)
         elif not devices.system and not devices.microphones:
-            self._audio_note.configure(
-                text=tr(
-                    "未检测到可用的音频设备；仍可录制无声视频。",
-                    "No audio devices found; you can still record a silent video.",
-                ),
-                fg=_WARN,
+            warning_text = tr(
+                "未检测到可用的音频设备；仍可录制无声视频。",
+                "No audio devices found; you can still record a silent video.",
             )
-        elif not devices.system:
-            self._audio_note.configure(
-                text=tr(
-                    "未检测到系统声音输出设备；可录制麦克风或无声视频。",
-                    "No system audio output found; record a microphone or silent video.",
-                ),
-                fg=_WARN,
-            )
-        elif not devices.microphones:
-            self._audio_note.configure(
-                text=tr(
-                    "未检测到麦克风；系统声音仍可正常录制。",
-                    "No microphone found; system audio can still be recorded.",
-                ),
-                fg=_MUTED,
-            )
-        else:
-            self._audio_note.configure(
-                text=tr(
-                "系统声音通过扬声器环回录制；音频会混为一条 AAC 音轨。",
-                "System audio is captured via speaker loopback and mixed into one AAC track.",
-            ),
-                fg=_MUTED,
-            )
+        self._set_audio_note(warning_text)
         if not devices.error:
             self.system_audio_var.set(
                 self.system_audio_var.get() and bool(devices.system)
@@ -920,9 +918,22 @@ class RecorderApp:
             )
         self._sync_audio_controls()
 
+    def _set_audio_note(self, text: str) -> None:
+        should_show = bool(text)
+        if should_show:
+            self._audio_note.configure(text=text, fg=_WARN)
+            if not self._audio_note_visible:
+                self._audio_note.pack(fill="x", pady=(self._s(6), 0))
+                self._audio_note_visible = True
+                self._fit_and_center_window()
+        elif self._audio_note_visible:
+            self._audio_note.pack_forget()
+            self._audio_note_visible = False
+            self._fit_and_center_window()
+
     def _populate_device_combo(
         self,
-        combo: ttk.Combobox,
+        combo: RoundedDropdown,
         variable: tk.StringVar,
         devices: tuple[AudioDevice, ...],
         default_id: str | None,

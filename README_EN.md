@@ -8,6 +8,7 @@ A Windows desktop screen region recording tool. Drag to select any region of you
 
 ## Features
 
+- Compact modern rounded UI: The main window, post-selection action toolbar, and bottom-right countdown overlay all use pure Tkinter + NumPy anti-aliased rounded widgets for a cohesive look without extra UI library dependencies.
 - Full-screen drag-to-select recording region with multi-monitor and high-DPI support.
 - Duration presets: 10 / 20 / 40 / 60 seconds; `MAX` records without a time limit until you click stop.
 - You can also enter any integer between 1 and 3600 seconds (up to 1 hour) in **Custom**.
@@ -17,7 +18,7 @@ A Windows desktop screen region recording tool. Drag to select any region of you
 - Audio: Record **System audio** (speaker loopback) and **Microphone** individually or simultaneously, select specific devices, and set the AAC audio bitrate.
 - Video uses H.264 encoding (automatically detects GPU hardware acceleration for NVIDIA NVENC / Intel QSV / AMD AMF, and seamlessly falls back to CPU encoding when hardware support is unavailable or the capture region is small; can be forced via the `QUICKREC_VIDEO_ENCODER` environment variable), and audio uses AAC, muxed into an MP4 file.
 - Performance optimization & low CPU usage: Uses Win32 GDI shared memory (`DIBSection`) zero-copy screen capture, localized cursor patching (avoiding full-frame copies on every frame), efficient pipe buffering, and high-precision timing to greatly reduce CPU usage during recording.
-- Customizable save location, defaulting to the Windows **Videos** folder; if that folder is not writable, QuickRec automatically switches to an `output` folder in the application directory on startup and shows a notice in the status bar.
+- Customizable save location, defaulting to the Windows **Videos** folder; if that folder is not writable, QuickRec automatically switches to an `output` folder in the application directory on startup and shows a notice in the bottom hint line.
 - Folder selection uses a built-in pure-Tk directory picker instead of Windows Shell dialogs, preventing hangs in restricted environments.
 - After recording starts, the main window automatically hides to the system tray and a countdown overlay appears in the bottom-right corner with a **Stop** button to finish and save at any time.
 - Clicking the minimize button in the top-right corner also hides the window to the system tray; you can restore the main window from the tray menu.
@@ -133,14 +134,14 @@ Packaging notes:
 > [!IMPORTANT]
 > It is strongly recommended to run this software with administrator privileges. Otherwise, the software will be unable to minimize to the system tray or use the system's default video save path.
 
-1. Choose a recording duration: click the `10s` / `20s` / `40s` / `60s` preset buttons, click `MAX` for unlimited duration, or enter seconds in the **Custom** input box.
+1. Choose a recording duration: click the `10s` / `20s` / `40s` / `60s` preset buttons, click `MAX` for unlimited duration, or enter seconds in the **Custom** input box (supports Up/Down arrow keys).
 2. Configure **Video & audio**:
-   - Adjust **FPS** (5–60), **Video bitrate** (Mbps), and **Audio bitrate** (kbps).
+   - Adjust **FPS** (5–60), **Bitrate** (Mbps), and **Audio** (kbps) inline, with direct typing or Up/Down arrow key nudging.
    - Check **Record cursor** to render the mouse pointer into the video.
    - Check **System audio** and pick a speaker device to record audio playing on your PC.
    - Check **Microphone** and pick a microphone device.
    - Click **Refresh devices** to re-enumerate devices after hardware changes.
-3. Verify the **Save location**, or click **Browse…** to choose another folder.
+3. Verify the **Save location**, or click **Browse...** to choose another folder.
 4. Click **Start recording**.
 5. Once the screen dims, hold the left mouse button and drag to select the recording area; release to finish or drag again to reselect.
 6. Click **Start recording** or press `Enter` to begin; press `Esc` or right-click to cancel.
@@ -206,6 +207,7 @@ Minimizing the window:
 │   ├── paths.py                      # Default directories, filenames, open folder
 │   ├── region_selector.py            # Full-screen region selection & toolbar
 │   ├── tray.py                       # Win32 system tray integration
+│   ├── widgets.py                    # Pure-Tk + NumPy anti-aliased rounded widgets
 │   └── win32.py                      # DPI, screen bounds, capture exclusion
 ├── tests/                            # unittest automated test suite
 ├── docs/screenshot-main-zh.png       # Chinese UI screenshot
@@ -219,6 +221,6 @@ Minimizing the window:
 python -m unittest discover -s tests -v
 ```
 
-Test coverage includes frame-by-frame recording scheduling, high-FPS frame padding, `MAX` unlimited recording stop, Win32 GDI capture and localized cursor patching, hardware encoder probing and small-region fallback, automatic fallback to `libx264` on first-frame pipe errors, frame-by-frame cursor compositing, stop and cancel behavior, FPS/bitrate/duration validation, audio/video muxing commands, audio device name deduplication, region normalization, output filename deduplication, write-permission probing, the Tk directory picker, paths with Chinese characters or spaces, settings persistence and corrupted-config fallback, and bilingual copy & language fallback.
+Test coverage includes frame-by-frame recording scheduling, high-FPS frame padding, `MAX` unlimited recording stop, Win32 GDI capture and localized cursor patching, hardware encoder probing and small-region fallback, automatic fallback to `libx264` on first-frame pipe errors, frame-by-frame cursor compositing, stop and cancel behavior, FPS/bitrate/duration validation, audio/video muxing commands, audio device name deduplication, region normalization, output filename deduplication, write-permission probing, the Tk directory picker, paths with Chinese characters or spaces, settings persistence and corrupted-config fallback, anti-aliased rounded widget and indicator rendering, and bilingual copy & language fallback.
 
 The UI and real recordings have been manually verified on Windows: launching the main window, switching between Chinese and English, region selection, 60s and `MAX` presets, the countdown stop button, custom duration, H.264 video, cursor rendering, system audio + microphone mixing, early stop, cancellation, completion dialog, minimize-to-tray behavior, restricted-directory fallback, built-in folder picker, and MP4 playback.

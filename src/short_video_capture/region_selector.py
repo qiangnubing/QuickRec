@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from .capture import CaptureRegion
 from .i18n import tr
+from .widgets import RoundedButton, RoundedCard
 from .win32 import primary_work_area, virtual_screen_rect
 
 MIN_SELECTION = 32
@@ -14,6 +15,15 @@ _OVERLAY_BG = "#020617"
 _ACCENT = "#38BDF8"
 _HINT_COLOR = "#E2E8F0"
 _WARN_COLOR = "#FCA5A5"
+_TRANSPARENT_KEY = "#010203"
+_BAR_BG = "#0F172A"
+_BAR_BORDER = "#334155"
+_BTN_PRIMARY = "#F55342"
+_BTN_PRIMARY_HOVER = "#E54332"
+_BTN_PRIMARY_ACTIVE = "#D63726"
+_BTN_SECONDARY = "#1E293B"
+_BTN_SECONDARY_HOVER = "#334155"
+_BTN_SECONDARY_ACTIVE = "#475569"
 
 
 class RegionSelector:
@@ -38,6 +48,10 @@ class RegionSelector:
 
         self.window = tk.Toplevel(root)
         self.window.withdraw()
+        try:
+            self._dpi_scale = max(1.0, self.window.winfo_fpixels("1i") / 96.0)
+        except tk.TclError:
+            self._dpi_scale = 1.0
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         self.window.attributes("-alpha", 0.45)
@@ -229,25 +243,40 @@ class RegionSelector:
             self.canvas.itemconfigure(handle, state="normal")
             self.canvas.tag_raise(handle)
 
+    def _s(self, px: int) -> int:
+        return max(1, round(px * self._dpi_scale))
+
     def _show_action_bar(self) -> None:
         if self._selection is None or self._bar is not None:
             return
         left, top, width, height = self._selection
         bar = tk.Toplevel(self.window)
+        bar.withdraw()
         bar.overrideredirect(True)
         bar.attributes("-topmost", True)
-        bar.configure(bg="#0B1220")
+        transparent_supported = True
+        try:
+            bar.configure(bg=_TRANSPARENT_KEY)
+            bar.attributes("-transparentcolor", _TRANSPARENT_KEY)
+        except tk.TclError:
+            transparent_supported = False
+            bar.configure(bg=_BAR_BG)
         self._bar = bar
 
-        frame = tk.Frame(
+        card = RoundedCard(
             bar,
-            bg="#0B1220",
-            highlightbackground="#334155",
-            highlightthickness=1,
+            parent_bg=_TRANSPARENT_KEY if transparent_supported else _BAR_BG,
+            card_bg=_BAR_BG,
+            border=_BAR_BORDER,
+            border_width=1.0,
+            radius=self._s(10),
+            pad_x=self._s(14),
+            pad_y=self._s(10),
+            shadow=False,
+            transparent_key=transparent_supported,
         )
-        frame.pack(fill="both", expand=True)
-        content = tk.Frame(frame, bg="#0B1220")
-        content.pack(padx=12, pady=9)
+        card.pack(fill="both", expand=True)
+        content = card.inner
 
         tk.Label(
             content,
@@ -257,61 +286,58 @@ class RegionSelector:
                 width=width,
                 height=height,
             ),
-            bg="#0B1220",
-            fg="#94A3B8",
+            bg=_BAR_BG,
+            fg="#CBD5E1",
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(0, 14))
+        ).pack(side="left", padx=(0, self._s(14)))
 
-        start_button = tk.Button(
+        btn_height = self._s(32)
+        btn_radius = self._s(7)
+        RoundedButton(
             content,
             text=tr("开始录制", "Start recording"),
             command=self._confirm,
-            bg="#EF4444",
+            parent_bg=_BAR_BG,
+            fill=_BTN_PRIMARY,
+            hover_fill=_BTN_PRIMARY_HOVER,
+            active_fill=_BTN_PRIMARY_ACTIVE,
             fg="#FFFFFF",
-            activebackground="#DC2626",
-            activeforeground="#FFFFFF",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=18,
-            pady=6,
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10, "bold"),
-        )
-        start_button.pack(side="left", padx=(0, 8))
+            font=("Microsoft YaHei UI", 9, "bold"),
+            text_pad_x=self._s(16),
+            height=btn_height,
+            radius=btn_radius,
+        ).pack(side="left", padx=(0, self._s(8)))
 
-        tk.Button(
+        RoundedButton(
             content,
             text=tr("重新框选", "Reselect"),
             command=self._reset_selection,
-            bg="#1E293B",
+            parent_bg=_BAR_BG,
+            fill=_BTN_SECONDARY,
+            hover_fill=_BTN_SECONDARY_HOVER,
+            active_fill=_BTN_SECONDARY_ACTIVE,
             fg="#E2E8F0",
-            activebackground="#334155",
-            activeforeground="#FFFFFF",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=12,
-            pady=6,
-            cursor="hand2",
+            border=_BAR_BORDER,
             font=("Microsoft YaHei UI", 9),
-        ).pack(side="left", padx=(0, 8))
+            text_pad_x=self._s(12),
+            height=btn_height,
+            radius=btn_radius,
+        ).pack(side="left", padx=(0, self._s(8)))
 
-        tk.Button(
+        RoundedButton(
             content,
             text=tr("取消", "Cancel"),
             command=self.cancel,
-            bg="#1E293B",
+            parent_bg=_BAR_BG,
+            fill=_BTN_SECONDARY,
+            hover_fill=_BTN_SECONDARY_HOVER,
+            active_fill=_BTN_SECONDARY_ACTIVE,
             fg="#CBD5E1",
-            activebackground="#334155",
-            activeforeground="#FFFFFF",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=12,
-            pady=6,
-            cursor="hand2",
+            border=_BAR_BORDER,
             font=("Microsoft YaHei UI", 9),
+            text_pad_x=self._s(12),
+            height=btn_height,
+            radius=btn_radius,
         ).pack(side="left")
 
         bar.update_idletasks()
@@ -326,16 +352,18 @@ class RegionSelector:
         ):
             area = self._virtual
         x = selection_center_x - bar_width // 2
-        y = self._virtual.top + top + height + 12
+        y = self._virtual.top + top + height + self._s(12)
         if y + bar_height > area.bottom - 16:
-            y = self._virtual.top + top - bar_height - 12
+            y = self._virtual.top + top - bar_height - self._s(12)
         if y < area.top + 16:
             y = area.bottom - bar_height - 16
         x = max(area.left + 16, min(x, area.right - bar_width - 16))
         bar.geometry(f"{bar_width}x{bar_height}{x:+d}{y:+d}")
+        bar.deiconify()
         bar.lift()
         try:
-            bar.bind("<Escape>", self._on_key)
+            for sequence in ("<Escape>", "<Return>", "<KP_Enter>"):
+                bar.bind(sequence, self._on_key)
         except tk.TclError:
             pass
         self.window.focus_force()
