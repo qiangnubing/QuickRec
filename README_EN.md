@@ -8,7 +8,7 @@ A Windows desktop screen region recording tool. Drag to select any region of you
 
 ## Features
 
-- Compact modern rounded UI: The main window, post-selection action toolbar, bottom-right countdown overlay, and modal dialogs all use pure Tkinter + NumPy anti-aliased rounded widgets for a cohesive look without extra UI library dependencies.
+- Compact modern rounded UI: The main window, directory picker, post-selection action toolbar, bottom-right countdown overlay, and modal dialogs all use pure Tkinter + NumPy anti-aliased rounded widgets for a cohesive look without extra UI library dependencies.
 - Full-screen drag-to-select recording region with full high-DPI and extended multi-monitor support (including negative-coordinate secondary displays placed above or left of the primary display), showing hints on every monitor and keeping the confirmation toolbar on the selected display.
 - Duration presets: 10 / 20 / 40 / 60 seconds; `MAX` records without a time limit until you click stop.
 - You can also enter any integer between 1 and 3600 seconds (up to 1 hour) in **Custom**.

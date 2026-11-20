@@ -10,7 +10,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from .i18n import tr
-from .widgets import RoundedButton, RoundedCard, render_dot_png
+from .widgets import RoundedButton, RoundedCard, RoundedEntry, render_dot_png
 from .win32 import (
     ScreenRect,
     center_position,
@@ -22,7 +22,9 @@ from .win32 import (
 
 _BG = "#F1F5F9"
 _CARD_BG = "#FFFFFF"
+_FIELD_BG = "#F8FAFC"
 _BORDER = "#E2E8F0"
+_INPUT_BORDER = "#D8E0EA"
 _TEXT = "#0F172A"
 _MUTED = "#64748B"
 _ACCENT = "#F55342"
@@ -129,6 +131,7 @@ class _ModalDialog:
         self._parent = parent
         self._result = False
         self._confirm_on_enter = True
+        self._prev_grab: tk.Misc | None = None
 
         self.window = tk.Toplevel(parent)
         self.window.withdraw()
@@ -276,6 +279,11 @@ class _ModalDialog:
         self.window.lift()
         self.window.focus_force()
         try:
+            current_grab = self.window.grab_current()
+            self._prev_grab = current_grab if current_grab is not self.window else None
+        except tk.TclError:
+            self._prev_grab = None
+        try:
             self.window.grab_set()
         except tk.TclError:
             pass
@@ -292,6 +300,8 @@ class _ModalDialog:
         self._close()
 
     def _close(self) -> None:
+        prev_grab = self._prev_grab
+        self._prev_grab = None
         try:
             self.window.grab_release()
         except tk.TclError:
@@ -300,6 +310,12 @@ class _ModalDialog:
             self.window.destroy()
         except tk.TclError:
             pass
+        if prev_grab is not None:
+            try:
+                if prev_grab.winfo_exists():
+                    prev_grab.grab_set()
+            except tk.TclError:
+                pass
 
     def show(self) -> bool:
         try:
@@ -342,4 +358,235 @@ def show_error(parent: tk.Misc, title: str, message: str) -> None:
         message,
         kind="error",
         ok_text=tr("确定", "OK"),
+    ).show()
+
+
+class _InputDialog:
+    """居中于父窗口的圆角单行输入模态弹窗。"""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        title: str,
+        prompt: str,
+        *,
+        initial_value: str = "",
+        ok_text: str | None = None,
+        cancel_text: str | None = None,
+    ) -> None:
+        self._parent = parent
+        self._result: str | None = None
+        self._prev_grab: tk.Misc | None = None
+
+        self.window = tk.Toplevel(parent)
+        self.window.withdraw()
+        self.window.title(title)
+        self.window.configure(bg=_BG)
+        self.window.resizable(False, False)
+        try:
+            self._dpi_scale = max(1.0, self.window.winfo_fpixels("1i") / 96.0)
+        except tk.TclError:
+            self._dpi_scale = 1.0
+        try:
+            self.window.transient(parent.winfo_toplevel())
+        except tk.TclError:
+            pass
+        self.window.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        outer = tk.Frame(self.window, bg=_BG)
+        outer.pack(
+            fill="both",
+            expand=True,
+            padx=self._s(14),
+            pady=(self._s(12), self._s(12)),
+        )
+
+        card = RoundedCard(
+            outer,
+            parent_bg=_BG,
+            card_bg=_CARD_BG,
+            border=_BORDER,
+            radius=self._s(10),
+            pad_x=self._s(16),
+            pad_y=(self._s(14), self._s(14)),
+            shadow=True,
+        )
+        card.pack(fill="both", expand=True)
+
+        content = tk.Frame(card.inner, bg=_CARD_BG)
+        content.pack(fill="both", expand=True)
+
+        dot_size = self._s(14)
+        self._badge_photo = tk.PhotoImage(
+            master=self.window,
+            data=render_dot_png(
+                dot_size,
+                _INFO,
+                _CARD_BG,
+                dot_radius=self._s(4),
+                glow_alpha=0.25,
+                glow_blur=2.5,
+            ),
+        )
+        header_row = tk.Frame(content, bg=_CARD_BG)
+        header_row.pack(fill="x", pady=(0, self._s(8)))
+        tk.Label(
+            header_row,
+            image=self._badge_photo,
+            bg=_CARD_BG,
+            bd=0,
+            highlightthickness=0,
+        ).pack(side="left", padx=(0, self._s(8)))
+        tk.Label(
+            header_row,
+            text=title,
+            bg=_CARD_BG,
+            fg=_TEXT,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            content,
+            text=prompt,
+            bg=_CARD_BG,
+            fg=_MUTED,
+            font=("Microsoft YaHei UI", 9),
+            anchor="w",
+        ).pack(fill="x", pady=(0, self._s(6)))
+
+        self.value_var = tk.StringVar(value=initial_value)
+        entry_box = RoundedEntry(
+            content,
+            textvariable=self.value_var,
+            parent_bg=_CARD_BG,
+            field_bg=_FIELD_BG,
+            border=_INPUT_BORDER,
+            focus_border=_INFO,
+            fg=_TEXT,
+            font=("Microsoft YaHei UI", 9),
+            width=self._s(290),
+            height=self._s(32),
+            radius=self._s(6),
+            pad_x=self._s(10),
+        )
+        entry_box.pack(fill="x")
+        self.entry = entry_box.entry
+
+        actions = tk.Frame(outer, bg=_BG)
+        actions.pack(fill="x", pady=(self._s(10), 0))
+        btn_height = self._s(32)
+        btn_radius = self._s(7)
+        RoundedButton(
+            actions,
+            text=cancel_text or tr("取消", "Cancel"),
+            command=self._on_cancel,
+            parent_bg=_BG,
+            fill=_BTN_NEUTRAL,
+            hover_fill=_BTN_NEUTRAL_HOVER,
+            active_fill=_BTN_NEUTRAL_ACTIVE,
+            fg=_TEXT,
+            font=("Microsoft YaHei UI", 9),
+            min_width=self._s(72),
+            text_pad_x=self._s(14),
+            height=btn_height,
+            radius=btn_radius,
+        ).pack(side="right")
+        RoundedButton(
+            actions,
+            text=ok_text or tr("确定", "OK"),
+            command=self._on_confirm,
+            parent_bg=_BG,
+            fill=_ACCENT,
+            hover_fill=_ACCENT_HOVER,
+            active_fill=_ACCENT_ACTIVE,
+            fg="#FFFFFF",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            min_width=self._s(76),
+            text_pad_x=self._s(16),
+            height=btn_height,
+            radius=btn_radius,
+        ).pack(side="right", padx=(0, self._s(8)))
+
+        self.window.bind("<Escape>", lambda _event: self._on_cancel())
+        self.window.bind("<Return>", lambda _event: self._on_confirm())
+        self.window.bind("<KP_Enter>", lambda _event: self._on_confirm())
+
+        self.window.update_idletasks()
+        req_w = max(self._s(340), self.window.winfo_reqwidth())
+        req_h = self.window.winfo_reqheight()
+        center_window_over_parent(self.window, parent, width=req_w, height=req_h)
+        self.window.deiconify()
+        self.window.lift()
+        self.window.focus_force()
+        self.entry.focus_set()
+        self.entry.select_range(0, tk.END)
+        try:
+            current_grab = self.window.grab_current()
+            self._prev_grab = current_grab if current_grab is not self.window else None
+        except tk.TclError:
+            self._prev_grab = None
+        try:
+            self.window.grab_set()
+        except tk.TclError:
+            pass
+
+    def _s(self, px: int) -> int:
+        return max(1, round(px * self._dpi_scale))
+
+    def _on_confirm(self) -> None:
+        self._result = self.value_var.get()
+        self._close()
+
+    def _on_cancel(self) -> None:
+        self._result = None
+        self._close()
+
+    def _close(self) -> None:
+        prev_grab = self._prev_grab
+        self._prev_grab = None
+        try:
+            self.window.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            pass
+        if prev_grab is not None:
+            try:
+                if prev_grab.winfo_exists():
+                    prev_grab.grab_set()
+            except tk.TclError:
+                pass
+
+    def show(self) -> str | None:
+        try:
+            self.window.wait_window(self.window)
+        finally:
+            try:
+                self._parent.winfo_toplevel().focus_set()
+            except tk.TclError:
+                pass
+        return self._result
+
+
+def ask_string(
+    parent: tk.Misc,
+    title: str,
+    prompt: str,
+    *,
+    initial_value: str = "",
+    ok_text: str | None = None,
+    cancel_text: str | None = None,
+) -> str | None:
+    """显示居中于父窗口的圆角文本输入弹窗。"""
+
+    return _InputDialog(
+        parent,
+        title,
+        prompt,
+        initial_value=initial_value,
+        ok_text=ok_text,
+        cancel_text=cancel_text,
     ).show()

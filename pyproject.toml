@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quickrec"
-version = "1.4.1"
+version = "1.4.2"
 description = "QuickRec — Windows screen region recorder with 60s/MAX presets, bilingual UI, quality control, and system/microphone audio"
 readme = "README.md"
 license = "MIT"

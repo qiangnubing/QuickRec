@@ -965,6 +965,7 @@ class RoundedDropdown(tk.Canvas):
         self._state = "readonly"
         self._hovered = False
         self._popup: tk.Toplevel | None = None
+        self._prev_grab: tk.Misc | None = None
         self._photo: tk.PhotoImage | None = None
         self._size = (canvas_w, height)
 
@@ -1088,6 +1089,11 @@ class RoundedDropdown(tk.Canvas):
         popup.lift()
         popup.focus_set()
         try:
+            current_grab = self.grab_current()
+            self._prev_grab = current_grab if current_grab is not popup else None
+        except tk.TclError:
+            self._prev_grab = None
+        try:
             popup.grab_set()
         except tk.TclError:
             pass
@@ -1128,6 +1134,8 @@ class RoundedDropdown(tk.Canvas):
     def _close_popup(self) -> None:
         popup = self._popup
         self._popup = None
+        prev_grab = self._prev_grab
+        self._prev_grab = None
         if popup is not None:
             try:
                 popup.grab_release()
@@ -1135,6 +1143,12 @@ class RoundedDropdown(tk.Canvas):
                 pass
             try:
                 popup.destroy()
+            except tk.TclError:
+                pass
+        if prev_grab is not None:
+            try:
+                if prev_grab.winfo_exists():
+                    prev_grab.grab_set()
             except tk.TclError:
                 pass
         self._redraw()
@@ -1225,3 +1239,180 @@ class RoundedDropdown(tk.Canvas):
             fill=arrow_fill,
             outline="",
         )
+
+
+class RoundedScrollbar(tk.Canvas):
+    """抗锯齿圆角垂直滚动条，替代原生方角 tk.Scrollbar。"""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        command: Callable[..., object] | None = None,
+        bg: str = "#FFFFFF",
+        thumb_color: str = "#CBD5E1",
+        thumb_hover_color: str = "#94A3B8",
+        thumb_active_color: str = "#64748B",
+        width: int = 10,
+        thumb_pad_x: int = 2,
+        thumb_pad_y: int = 2,
+        min_thumb_height: int = 24,
+    ) -> None:
+        super().__init__(
+            parent,
+            width=width,
+            bg=bg,
+            bd=0,
+            highlightthickness=0,
+        )
+        self._command = command
+        self._bg = bg
+        self._thumb_color = thumb_color
+        self._thumb_hover_color = thumb_hover_color
+        self._thumb_active_color = thumb_active_color
+        self._thumb_pad_x = thumb_pad_x
+        self._thumb_pad_y = thumb_pad_y
+        self._min_thumb_height = min_thumb_height
+        self._first = 0.0
+        self._last = 1.0
+        self._size = (width, 1)
+        self._thumb_bounds: tuple[int, int] | None = None
+        self._hovered = False
+        self._dragging = False
+        self._drag_offset = 0.0
+        self._photo: tk.PhotoImage | None = None
+
+        self.bind("<Configure>", self._on_configure)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+
+    def configure(self, cnf: dict[str, object] | None = None, **kwargs: object) -> object:
+        if "command" in kwargs:
+            cmd = kwargs.pop("command")
+            self._command = cmd if callable(cmd) else None
+        if cnf is not None or kwargs:
+            return super().configure(cnf, **kwargs)
+        return None
+
+    config = configure
+
+    def set(self, first: str | float, last: str | float) -> None:
+        lo = max(0.0, min(1.0, float(first)))
+        hi = max(lo, min(1.0, float(last)))
+        if abs(lo - self._first) < 1e-6 and abs(hi - self._last) < 1e-6:
+            return
+        self._first = lo
+        self._last = hi
+        self._redraw()
+
+    def _is_scrollable(self) -> bool:
+        return not (self._first <= 1e-6 and self._last >= 1.0 - 1e-6)
+
+    def _track_metrics(self) -> tuple[int, int, int, int, float]:
+        _w, h = self._size
+        track_top = self._thumb_pad_y
+        track_h = max(1, h - 2 * self._thumb_pad_y)
+        visible = max(0.0, min(1.0, self._last - self._first))
+        thumb_h = max(min(self._min_thumb_height, track_h), round(track_h * visible))
+        travel = max(0, track_h - thumb_h)
+        scrollable = max(0.0, 1.0 - visible)
+        return track_top, track_h, thumb_h, travel, scrollable
+
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.width > 1 and event.height > 1:
+            self._size = (event.width, event.height)
+            self._redraw()
+
+    def _on_enter(self, _event: tk.Event) -> None:
+        if self._is_scrollable():
+            self._hovered = True
+            self._redraw()
+
+    def _on_leave(self, _event: tk.Event) -> None:
+        if self._hovered and not self._dragging:
+            self._hovered = False
+            self._redraw()
+
+    def _on_press(self, event: tk.Event) -> None:
+        if not self._is_scrollable() or self._command is None:
+            return
+        bounds = self._thumb_bounds
+        if bounds is not None and bounds[0] <= event.y <= bounds[1]:
+            self._dragging = True
+            self._drag_offset = event.y - bounds[0]
+            self._redraw()
+            return
+        track_top, _track_h, thumb_h, travel, scrollable = self._track_metrics()
+        self._dragging = True
+        self._drag_offset = thumb_h * 0.5
+        self._move_thumb_to(event.y - self._drag_offset, track_top, travel, scrollable)
+        self._redraw()
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if not self._dragging or self._command is None:
+            return
+        track_top, _track_h, _thumb_h, travel, scrollable = self._track_metrics()
+        self._move_thumb_to(event.y - self._drag_offset, track_top, travel, scrollable)
+
+    def _on_release(self, event: tk.Event) -> None:
+        if not self._dragging:
+            return
+        self._dragging = False
+        w, h = self._size
+        self._hovered = (
+            self._is_scrollable() and 0 <= event.x <= w and 0 <= event.y <= h
+        )
+        self._redraw()
+
+    def _move_thumb_to(
+        self,
+        thumb_top: float,
+        track_top: int,
+        travel: int,
+        scrollable: float,
+    ) -> None:
+        if self._command is None or travel <= 0 or scrollable <= 1e-6:
+            return
+        clamped = max(0.0, min(float(travel), thumb_top - track_top))
+        fraction = (clamped / travel) * scrollable
+        self._command("moveto", f"{fraction:.6f}")
+
+    def _redraw(self) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        w, h = self._size
+        self.delete("all")
+        if w < 4 or h < 6 or not self._is_scrollable():
+            self._thumb_bounds = None
+            super().configure(cursor="")
+            return
+
+        track_top, _track_h, thumb_h, travel, scrollable = self._track_metrics()
+        ratio = (self._first / scrollable) if scrollable > 1e-6 else 0.0
+        thumb_y = track_top + round(travel * max(0.0, min(1.0, ratio)))
+        thumb_w = max(4, w - 2 * self._thumb_pad_x)
+        self._thumb_bounds = (thumb_y, thumb_y + thumb_h)
+        super().configure(cursor="hand2")
+
+        if self._dragging:
+            fill = self._thumb_active_color
+        elif self._hovered:
+            fill = self._thumb_hover_color
+        else:
+            fill = self._thumb_color
+
+        png = render_rounded_rect_png(
+            thumb_w,
+            thumb_h,
+            thumb_w * 0.5,
+            fill,
+            self._bg,
+        )
+        self._photo = tk.PhotoImage(master=self, data=png)
+        self.create_image(self._thumb_pad_x, thumb_y, anchor="nw", image=self._photo)

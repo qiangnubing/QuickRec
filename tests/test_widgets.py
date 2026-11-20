@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import struct
+import tkinter as tk
 import unittest
 from pathlib import Path
 
 from short_video_capture.app import ICON_PNG
 from short_video_capture.widgets import (
+    RoundedScrollbar,
     load_scaled_icon_png,
     render_checkbox_png,
     render_dot_png,
@@ -111,6 +114,31 @@ class WidgetsRenderTests(unittest.TestCase):
 
     def test_load_scaled_icon_png_missing_file(self) -> None:
         self.assertIsNone(load_scaled_icon_png(Path("nonexistent_icon.png"), 48))
+
+    @unittest.skipUnless(os.name == "nt", "仅 Windows")
+    def test_rounded_scrollbar_visibility_and_moveto(self) -> None:
+        commands: list[tuple[object, ...]] = []
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            bar = RoundedScrollbar(
+                root,
+                command=lambda *args: commands.append(args),
+                width=10,
+            )
+            bar._size = (10, 120)
+            bar.set(0.0, 1.0)
+            self.assertIsNone(bar._thumb_bounds)
+
+            bar.set(0.0, 0.5)
+            self.assertIsNotNone(bar._thumb_bounds)
+            track_top, _track_h, _thumb_h, travel, scrollable = bar._track_metrics()
+            bar._move_thumb_to(track_top + travel, track_top, travel, scrollable)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0][0], "moveto")
+            self.assertAlmostEqual(float(str(commands[0][1])), 0.5, places=4)
+        finally:
+            root.destroy()
 
 
 if __name__ == "__main__":

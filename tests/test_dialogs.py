@@ -8,7 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from short_video_capture.dialogs import _ModalDialog, center_window_over_parent
+from short_video_capture.dialogs import (
+    _InputDialog,
+    _ModalDialog,
+    center_window_over_parent,
+)
 from short_video_capture.win32 import (
     display_monitors,
     enable_dpi_awareness,
@@ -114,6 +118,28 @@ class DialogCenteringTests(unittest.TestCase):
                     self.assertTrue(dialog._result)
                 finally:
                     dialog._close()
+        finally:
+            root.destroy()
+
+    def test_input_dialog_confirms_and_cancels(self) -> None:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            dlg = _InputDialog(root, "新建文件夹", "文件夹名称：", initial_value="demo")
+            try:
+                dlg.value_var.set("videos")
+                dlg._on_confirm()
+                self.assertEqual(dlg._result, "videos")
+            finally:
+                dlg._close()
+
+            cancelled = _InputDialog(root, "新建文件夹", "文件夹名称：")
+            try:
+                cancelled.value_var.set("ignored")
+                cancelled._on_cancel()
+                self.assertIsNone(cancelled._result)
+            finally:
+                cancelled._close()
         finally:
             root.destroy()
 
